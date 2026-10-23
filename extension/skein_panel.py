@@ -223,10 +223,16 @@ def draw_generic_panel(context, obj, layout, execute_mode, skein_preset_panel_id
 def draw_action_diagnostics(layout, obj):
     box = layout.box()
     for line in textwrap.wrap(
-        "Mapped Idle/Move/Jump actions play in ARForge Preview. Action key bindings are saved/exported; custom key execution is not enabled.",
+        "Mapped Idle/Move/Jump actions and bound action keys play in ARForge Preview. Key bindings are saved/exported.",
         width=55,
     ):
         box.label(text=line, icon='INFO')
+    for line in textwrap.wrap(
+        'Export and reload the model in ARForge first. Preview in ARForge works with any binding. Loops play until Stop preview; one-shots return automatically. Playback runs in ARForge, not the Blender timeline.',
+        width=55,
+    ):
+        box.label(text=line, icon='INFO')
+    box.operator('wm.skein_stop_action_preview', text='Stop preview', icon='PAUSE')
     clip_picker.request_clip_refresh(bpy.context, obj)
     box.prop(bpy.context.scene.skein_extension_properties, 'clip_export_mode')
     box.prop(bpy.context.scene.skein_extension_properties, 'clip_export_animations')
@@ -287,6 +293,12 @@ def render_two(layout, context, context_key, clip_object=None):
             row.operator("wm.skein_list_remove", text="", icon="REMOVE").index = index
             if entry.__annotations__["value"].function.__name__ == "PointerProperty":
                 render_two(item, entry, "value", clip_object=clip_object)
+                if (clip_object is not None and context_key == 'actions'
+                        and {'id', 'clip', 'looped', 'speed', 'binding'} <= entry.value.__annotations__.keys()):
+                    operation = item.operator('wm.skein_action_preview', text='Preview in ARForge', icon='PLAY')
+                    operation.target_object = clip_object.name
+                    operation.target_path = entry.value.path_from_id()
+                    operation.action_id = entry.value.id
             else:
                 item.prop(entry, "value", text="Value")
         return

@@ -184,7 +184,7 @@ class ListTests(unittest.TestCase):
         render_two(layout, controller, "actions")
         self.assertEqual(layout.operators.count("wm.skein_list_remove"), 2)
 
-    def test_character_panel_wraps_diagnostics_and_marks_bindings_data_only(self):
+    def test_character_panel_wraps_diagnostics_and_describes_bound_actions(self):
         from extension.skein_panel import draw_action_diagnostics
         bpy.context.window_manager.selected_component = "poc_design_editor::CharacterController"
         bpy.ops.object.insert_component()
@@ -194,6 +194,7 @@ class ListTests(unittest.TestCase):
         draw_action_diagnostics(layout, self.obj)
         text = " ".join(layout.labels)
         self.assertIn("saved/exported", text)
+        self.assertIn("bound action keys play", text)
         self.assertIn("actions[0].id", text)
         self.assertTrue(all(len(line) <= 55 for line in layout.labels))
 
