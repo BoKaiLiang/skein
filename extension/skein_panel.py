@@ -172,6 +172,11 @@ def draw_generic_panel(context, obj, layout, execute_mode, skein_preset_panel_id
             row = box.row()
             row.operator(execute_mode + ".insert_component")
 
+        if execute_mode == "object" and CHARACTER_CONTROLLER in registry:
+            row = layout.row(align=True)
+            row.operator("object.skein_copy_controller")
+            row.operator("object.skein_paste_controller")
+
         layout.label(text="Components on this " + execute_mode + ":")
 
         layout.template_list(

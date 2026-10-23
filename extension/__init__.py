@@ -1,6 +1,6 @@
 import bpy # type: ignore
 import json
-from . import clip_picker, action_preview
+from . import clip_picker, action_preview, controller_clipboard
 from bpy.app.handlers import persistent
 from .op_apply_preset import register as register_op_apply_preset, unregister as unregister_op_apply_preset
 from .op_list import register as register_op_list, unregister as unregister_op_list
@@ -180,6 +180,7 @@ def register():
     register_op_list()
     clip_picker.register()
     action_preview.register()
+    controller_clipboard.register()
     # panel
     register_skein_panel()
     register_skein_sidepanel()
@@ -243,6 +244,7 @@ def unregister():
     ## Preset Operations
     unregister_op_apply_preset()
     unregister_op_list()
+    controller_clipboard.unregister()
     action_preview.unregister()
     clip_picker.unregister()
     # panel
