@@ -26,6 +26,27 @@ class ActionValidationTests(unittest.TestCase):
         del data['actions']
         self.assertEqual(validation.validate_character_controller(data, ['Idle', 'Run', 'Jump']), [])
 
+    def test_optional_state_mapping_and_legacy_fallback(self):
+        data = controller()
+        data['actions'][0]['state'] = 'Idle'
+        self.assertEqual(validation.validate_character_controller(data, ['Run', 'Jump', 'Roll']), [])
+        data['actions'][0]['state'] = None
+        self.assertIn('animations.idle', {d['field'] for d in validation.validate_character_controller(data, ['Run', 'Jump', 'Roll'])})
+        data['actions'][0]['state'] = 'Fly'
+        self.assertIn('actions[0].state', {d['field'] for d in validation.validate_character_controller(data)})
+        data['actions'][0]['state'] = 'Idle'
+        data['actions'].append(dict(id='rest', clip='Roll', binding=None, looped=True, speed=1, state='Idle'))
+        self.assertIn('actions[1].state', {d['field'] for d in validation.validate_character_controller(data)})
+        data['actions'][0]['clip'] = 'Missing'
+        self.assertIn('animations.idle', {d['field'] for d in validation.validate_character_controller(data, ['Run', 'Jump', 'Roll'])})
+
+    def test_overridden_legacy_clips_still_require_valid_names(self):
+        for clip in ('', '  ', 'bad\tclip', 'x' * 257):
+            data = controller()
+            data['actions'][0]['state'] = 'Idle'
+            data['animations']['idle'] = clip
+            self.assertIn('animations.idle', {d['field'] for d in validation.validate_character_controller(data, ['Run', 'Jump', 'Roll'])})
+
     def test_field_diagnostics(self):
         data = controller()
         data['actions'][0].update(id='Idle', clip='Missing', binding='Space', speed=math.nan)

@@ -130,6 +130,34 @@ class ListTests(unittest.TestCase):
             self.assertEqual(get_data_from_active_editor(bpy.data.objects[name].skein_two[0], "Controller"),
                              dict(old_data, actions=[]))
 
+    def test_old_action_rows_get_none_for_new_option_state(self):
+        old_data = json.loads(json.dumps(DATA))
+        object_to_form(self.container, "Controller", old_data)
+        embedded = bpy.data.texts["skein-registry.json"]
+        embedded.clear()
+        embedded.write(json.dumps(REGISTRY))
+        name = self.obj.name
+        with tempfile.TemporaryDirectory(prefix="skein-old-action-state-") as temp:
+            path = str(Path(temp) / "old-actions.blend")
+            bpy.ops.wm.save_as_mainfile(filepath=path)
+            bpy.ops.wm.open_mainfile(filepath=path)
+        self.obj = bpy.data.objects[name]
+        updated = json.loads(json.dumps(REGISTRY))
+        updated["ActionState"] = schema("Enum", "ActionState", type="string", oneOf=["Idle", "Move", "Jump"])
+        updated["core::option::Option<ActionState>"] = schema(
+            "Enum", "core::option::Option<ActionState>", type="object", modulePath="core::option",
+            oneOf=[{"shortPath": "None", "typePath": "State::None"},
+                   dict(schema("Tuple", "State::Some", type="array", prefixItems=[ref("ActionState")]), shortPath="Some")])
+        updated["Action"]["properties"]["state"] = ref("core::option::Option<ActionState>")
+        process_registry(bpy.context, updated)
+        actual = get_data_from_active_editor(self.obj.skein_two[0], "Controller")
+        expected = dict(old_data, actions=[dict(action, state=None) for action in old_data["actions"]])
+        self.assertEqual(actual, expected)
+        actual["actions"][0]["state"] = "Idle"
+        object_to_form(self.obj.skein_two[0], "Controller", actual)
+        self.assertEqual(get_data_from_active_editor(self.obj.skein_two[0], "Controller"), actual)
+        process_registry(bpy.context, REGISTRY)
+
     def test_roundtrip_nested_and_scalar_lists(self):
         object_to_form(self.container, "Controller", DATA)
         self.assertEqual(get_data_from_active_editor(self.container, "Controller"), DATA)
@@ -156,12 +184,13 @@ class ListTests(unittest.TestCase):
         render_two(layout, controller, "actions")
         self.assertEqual(layout.operators.count("wm.skein_list_remove"), 2)
 
-    def test_character_panel_wraps_diagnostics_and_marks_data_only_actions(self):
+    def test_character_panel_wraps_diagnostics_and_marks_bindings_data_only(self):
         from extension.skein_panel import draw_action_diagnostics
         bpy.context.window_manager.selected_component = "poc_design_editor::CharacterController"
         bpy.ops.object.insert_component()
         object_to_form(self.obj.skein_two[-1], "poc_design_editor::CharacterController", DATA)
         layout = RecordingLayout()
+        layout.prop = lambda *args, **kwargs: None
         draw_action_diagnostics(layout, self.obj)
         text = " ".join(layout.labels)
         self.assertIn("saved/exported", text)

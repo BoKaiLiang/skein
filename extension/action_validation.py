@@ -1,4 +1,4 @@
-"""ARForge character authoring checks; does not change animation playback."""
+"""ARForge character authoring and export checks."""
 from collections import Counter
 import math
 import re
@@ -17,12 +17,12 @@ def validate_character_controller(data, available_clip_names=None):
     def error(field, message):
         diagnostics.append(dict(severity='ERROR', field=field, message=message))
 
-    def clip(field, value):
+    def clip(field, value, check_availability=True):
         if (not isinstance(value, str) or not value.strip()
                 or len(value.encode('utf-8')) > 256
                 or any(unicodedata.category(c) == 'Cc' for c in value)):
             error(field, 'Clip must be nonempty, at most 256 UTF-8 bytes, without control characters.')
-        elif clips is not None:
+        elif clips is not None and check_availability:
             if not clips[value]:
                 error(field, f'Clip {value!r} is absent from this export; check animation export settings.')
             elif clips[value] > 1:
@@ -31,10 +31,13 @@ def validate_character_controller(data, available_clip_names=None):
     bindings = data.get('bindings', {})
     used_keys = {value: f'bindings.{field}' for field, value in bindings.items() if isinstance(value, str)}
     used_ids = set()
+    mapped_states = set()
     actions = data.get('actions', [])
     if not isinstance(actions, list):
         error('actions', 'Actions must be a list.')
         actions = []
+    state_counts = Counter(action.get("state") for action in actions
+                           if isinstance(action, dict) and isinstance(action.get("state"), str))
     if len(actions) > 64:
         error('actions', 'At most 64 actions are supported.')
     for index, action in enumerate(actions):
@@ -42,6 +45,13 @@ def validate_character_controller(data, available_clip_names=None):
         if not isinstance(action, dict):
             error(field, 'Action must contain id, clip, binding, looped and speed fields.')
             continue
+        state = action.get('state')
+        if state is not None:
+            if state not in ('Idle', 'Move', 'Jump'):
+                error(f'{field}.state', 'State must be Idle, Move, Jump or None.')
+            elif state_counts[state] > 1:
+                error(f'{field}.state', f'Duplicate state mapping {state!r}.')
+        before = len(diagnostics)
         action_id = action.get('id')
         if not isinstance(action_id, str) or not ACTION_ID.fullmatch(action_id):
             error(f'{field}.id', 'Use 1–64 lowercase letters, digits or underscores, starting with a letter.')
@@ -69,12 +79,14 @@ def validate_character_controller(data, available_clip_names=None):
                 error(f'{field}.binding', f'{binding} is already used by {used_keys[binding]}.')
             if isinstance(binding, str):
                 used_keys[binding] = f'{field}.binding'
+        if state in ('Idle', 'Move', 'Jump') and state_counts[state] == 1 and len(diagnostics) == before:
+            mapped_states.add(state)
     animations = data.get('animations')
     if isinstance(animations, dict):
         for field in ('idle', 'jump'):
-            clip(f'animations.{field}', animations.get(field))
+            clip(f'animations.{field}', animations.get(field), field.capitalize() not in mapped_states)
         move_field = 'move_clip' if 'move_clip' in animations else 'move'
-        clip(f'animations.{move_field}', animations.get(move_field))
+        clip(f'animations.{move_field}', animations.get(move_field), 'Move' not in mapped_states)
     return diagnostics
 
 

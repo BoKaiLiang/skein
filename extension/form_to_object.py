@@ -7,6 +7,8 @@ def get_data_from_active_editor(context, context_key):
     if context_key not in context:
         # Older .blend files have no storage for list fields added by a new schema.
         value = getattr(context, context_key, None)
+        if getattr(value, "is_core_option", False):
+            return None
         if getattr(value, "_skein_is_list", False) or getattr(value, "force_default", None) == "list":
             return []
         return {}

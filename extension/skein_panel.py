@@ -3,6 +3,7 @@ import json
 import inspect
 import textwrap
 
+from . import clip_picker
 from .property_groups import hash_over_64
 from .action_validation import CHARACTER_CONTROLLER, get_object_action_diagnostics
 
@@ -215,17 +216,30 @@ def draw_generic_panel(context, obj, layout, execute_mode, skein_preset_panel_id
                 if hash_over_64(type_path) not in active_component_data:
                     layout.label(text=active_component_data.name + " has no data to edit")
                 else:
-                    render_two(layout, active_component_data, hash_over_64(type_path))
+                    render_two(layout, active_component_data, hash_over_64(type_path), clip_object=obj if execute_mode == "object" and type_path == CHARACTER_CONTROLLER else None)
             else:
                 layout.prop(active_component_data, hash_over_64(type_path))
 
 def draw_action_diagnostics(layout, obj):
     box = layout.box()
     for line in textwrap.wrap(
-        "Additional actions are saved/exported only in this phase; playback and input execution are not enabled.",
+        "Mapped Idle/Move/Jump actions play in ARForge Preview. Action key bindings are saved/exported; custom key execution is not enabled.",
         width=55,
     ):
         box.label(text=line, icon='INFO')
+    clip_picker.request_clip_refresh(bpy.context, obj)
+    box.prop(bpy.context.scene.skein_extension_properties, 'clip_export_mode')
+    box.prop(bpy.context.scene.skein_extension_properties, 'clip_export_animations')
+    box.operator('wm.skein_refresh_clips', text='Refresh exported clips', icon='FILE_REFRESH')
+    if bpy.context.mode != 'OBJECT':
+        box.label(text='Clip refresh waits for Object Mode.', icon='INFO')
+    for line in textwrap.wrap('Picker uses the active scene with default glTF settings and the mode above. Match final export settings; final export revalidates clips.', width=55):
+        box.label(text=line)
+    error = clip_picker.cached_clip_error(obj)
+    if error:
+        for line in textwrap.wrap('Clip discovery failed: ' + error, width=55):
+            box.label(text=line, icon='ERROR')
+        box.label(text='Use Refresh exported clips to retry.', icon='INFO')
     for diagnostic in get_object_action_diagnostics(obj):
         message = f'{diagnostic["field"]}: {diagnostic["message"]}'
         icon = 'ERROR' if diagnostic['severity'] == 'ERROR' else 'INFO'
@@ -233,10 +247,11 @@ def draw_action_diagnostics(layout, obj):
             box.label(text=line, icon=icon)
 
 
-def render_two(layout, context, context_key):
+def render_two(layout, context, context_key, clip_object=None):
     if context_key not in context:
         # A schema update may introduce an empty list on an existing component.
-        if not getattr(getattr(context, context_key, None), "_skein_is_list", False):
+        value = getattr(context, context_key, None)
+        if not (getattr(value, "_skein_is_list", False) or getattr(value, "is_core_option", False)):
             layout.label(text=context_key + " not in context")
             return
     
@@ -271,7 +286,7 @@ def render_two(layout, context, context_key):
             row.context_pointer_set("skein_list", obj)
             row.operator("wm.skein_list_remove", text="", icon="REMOVE").index = index
             if entry.__annotations__["value"].function.__name__ == "PointerProperty":
-                render_two(item, entry, "value")
+                render_two(item, entry, "value", clip_object=clip_object)
             else:
                 item.prop(entry, "value", text="Value")
         return
@@ -288,7 +303,7 @@ def render_two(layout, context, context_key):
                 case "Some":
                     layout.separator(type="LINE")
                     if "PointerProperty" == annotations["Some"].function.__name__:
-                        render_two(layout, obj, "Some")
+                        render_two(layout, obj, "Some", clip_object=clip_object)
                     else:
                         layout.prop(obj, "Some")
             return
@@ -312,7 +327,7 @@ def render_two(layout, context, context_key):
             # recurse down into the enum
             case value:
                 if "PointerProperty" == annotations[value].function.__name__:
-                    render_two(layout.box(), obj, value)
+                    render_two(layout.box(), obj, value, clip_object=clip_object)
                 else:
                     layout.prop(obj, value)
         return
@@ -461,21 +476,24 @@ def render_two(layout, context, context_key):
                 next_type = getattr(obj, key)
                 match next_type.type_override:
                     case "glam::Vec2" | "glam::DVec2" | "glam::I8Vec2" | "glam::U8Vec2" | "glam::I16Vec2" | "glam::U16Vec2" | "glam::IVec2" | "glam::UVec2" | "glam::I64Vec2" | "glam::U64Vec2" | "glam::BVec2":
-                        render_two(layout, obj, key)
+                        render_two(layout, obj, key, clip_object=clip_object)
                     case "glam::Vec3" | "glam::Vec3A" | "glam::DVec3" | "glam::I8Vec3" | "glam::U8Vec3" | "glam::I16Vec3" | "glam::U16Vec3" | "glam::IVec3" | "glam::UVec3" | "glam::I64Vec3" | "glam::U64Vec3" | "glam::BVec3":
-                        render_two(layout, obj, key)
+                        render_two(layout, obj, key, clip_object=clip_object)
                     case "glam::Vec4" | "glam::DVec4" | "glam::I8Vec4" | "glam::U8Vec4" | "glam::I16Vec4" | "glam::U16Vec4" | "glam::IVec4" | "glam::UVec4" | "glam::I64Vec4" | "glam::U64Vec4" | "glam::BVec4":
-                        render_two(layout, obj, key)
+                        render_two(layout, obj, key, clip_object=clip_object)
                     case "glam::Quat" | "glam::DQuat":
-                        render_two(layout, obj, key)
+                        render_two(layout, obj, key, clip_object=clip_object)
                     case _:
                         layout.label(text=key + ":")
-                        render_two(layout.box(), obj, key)
+                        render_two(layout.box(), obj, key, clip_object=clip_object)
             except AttributeError:
                 layout.label(text=key + ":")
-                render_two(layout.box(), obj, key)
+                render_two(layout.box(), obj, key, clip_object=clip_object)
         else:
-            layout.prop(obj, key)
+            if clip_object is not None and key in ('clip', 'idle', 'move_clip', 'move', 'jump') and value.function.__name__ == 'StringProperty':
+                clip_picker.draw_clip_field(layout, obj, key, clip_object)
+            else:
+                layout.prop(obj, key)
     return
 
 classes = (

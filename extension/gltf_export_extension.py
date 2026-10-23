@@ -48,6 +48,14 @@ class SkeinExtensionProperties(bpy.types.PropertyGroup):
         description='Export using glTF Extras',
         default=True
         ) # type: ignore
+    clip_export_mode: bpy.props.EnumProperty(
+        name="Picker export mode", default='NLA_TRACKS',
+        items=[('NLA_TRACKS', 'NLA Tracks', 'Use exported NLA track names'),
+               ('ACTIONS', 'Actions', 'Use the glTF Actions export mode'),
+               ('ACTIVE_ACTIONS', 'Active Actions', 'Use active actions'),
+               ('SCENE', 'Scene', 'Bake scene animation')],
+    ) # type: ignore
+    clip_export_animations: bpy.props.BoolProperty(name="Picker animations", default=True) # type: ignore
     extensions: bpy.props.BoolProperty(
         name="extensions",
         description='Export data into glTF Extensions',
@@ -105,7 +113,8 @@ class glTF2ExportUserExtension:
 
         # self.report() doesn't seem available here because we aren't
         # in "Blender" we're in the "gltf2 extension"
-        if self.properties.enabled:
+        from .clip_picker import is_discovery
+        if self.properties.enabled or is_discovery(export_settings):
             data = get_object_controller_data(blender_object)
             if data is not None:
                 self.character_controllers[id(gltf2_object)] = (gltf2_object, blender_object.name, data)
@@ -145,7 +154,8 @@ class glTF2ExportUserExtension:
 
     def gather_gltf_hook(self, active_scene_idx, scenes, animations, export_settings):
         """Validate only exported characters, after animation naming/merging."""
-        if not self.properties.enabled:
+        from .clip_picker import is_discovery
+        if not self.properties.enabled and not is_discovery(export_settings):
             return
         exported_nodes = set()
 
@@ -159,24 +169,21 @@ class glTF2ExportUserExtension:
         for scene in scenes:
             for node in scene.nodes or ():
                 visit(node, exported_nodes)
-        names = [animation.name for animation in animations]
+        from .clip_picker import record_discovery
         failures = []
         for node_id, (node, name, data) in self.character_controllers.items():
             if node_id not in exported_nodes:
                 continue
-            diagnostics = validate_character_controller(data, names)
-            # A matching name alone is insufficient if it animates another model.
             descendants = set()
             visit(node, descendants)
-            actions = data.get('actions', [])
-            referenced = {action.get('clip') for action in actions if isinstance(action, dict)} if isinstance(actions, list) else set()
-            legacy = data.get('animations') or {}
-            referenced.update(legacy.get(field) for field in ('idle', 'move', 'move_clip', 'jump'))
-            for animation in animations:
-                if animation.name not in referenced:
-                    continue
-                if not any(id(channel.target.node) in descendants for channel in animation.channels or ()):
-                    diagnostics.append(dict(severity='ERROR', field='clips', message=f'Clip {animation.name!r} targets no node in this character hierarchy.'))
+            own_names = {animation.name for animation in animations
+                         if any(id(channel.target.node) in descendants for channel in animation.channels or ())}
+            # Duplicate names anywhere in the GLB are ambiguous in Bevy's named animation map.
+            names = [animation.name for animation in animations if animation.name in own_names]
+            if is_discovery(export_settings):
+                record_discovery(name, names)
+                continue
+            diagnostics = validate_character_controller(data, names)
             if diagnostics:
                 failures.append(format_diagnostics(name, diagnostics))
         if failures:
