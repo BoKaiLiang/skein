@@ -3,6 +3,7 @@ import json
 import inspect
 import textwrap
 
+from .player_selection import PLAYER_CONTROLLED, get_source_selection_record, validate_player_selection
 from . import clip_picker
 from .property_groups import hash_over_64
 from .action_validation import CHARACTER_CONTROLLER, get_object_action_diagnostics
@@ -193,6 +194,9 @@ def draw_generic_panel(context, obj, layout, execute_mode, skein_preset_panel_id
         ):
             draw_action_diagnostics(layout, obj)
 
+        if any(component.selected_type_path in (CHARACTER_CONTROLLER, PLAYER_CONTROLLED) for component in obj.skein_two):
+            draw_player_selection(layout, obj)
+
         # build the form ui
         # obj_skein is an array of component data
         obj_skein = obj.skein_two
@@ -224,6 +228,22 @@ def draw_generic_panel(context, obj, layout, execute_mode, skein_preset_panel_id
                     render_two(layout, active_component_data, hash_over_64(type_path), clip_object=obj if execute_mode == "object" and type_path == CHARACTER_CONTROLLER else None)
             else:
                 layout.prop(active_component_data, hash_over_64(type_path))
+
+def draw_player_selection(layout, obj):
+    box = layout.box()
+    record = get_source_selection_record(obj)
+    messages = ['Choose the player: Insert Component → poc_design_editor::PlayerControlled on the same Object as CharacterController. Enable it on exactly one character across all loaded models; false opts out.']
+    diagnostics = validate_player_selection([record])
+    if not diagnostics and record[2]:
+        messages.append('PlayerControlled enabled: this Object is a player candidate.')
+    for message in messages:
+        for line in textwrap.wrap(message, width=55):
+            box.label(text=line, icon='INFO')
+    for diagnostic in diagnostics:
+        message = diagnostic['message'] if diagnostic['severity'] == 'ERROR' else 'This Object is not marked for player control. Only a sole unmarked controller uses legacy fallback.'
+        for line in textwrap.wrap(message, width=55):
+            box.label(text=line, icon='ERROR' if diagnostic['severity'] == 'ERROR' else 'INFO')
+
 
 def draw_action_diagnostics(layout, obj):
     box = layout.box()

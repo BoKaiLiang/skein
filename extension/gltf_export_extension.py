@@ -1,6 +1,7 @@
 import inspect
 import bpy
 
+from .player_selection import get_source_selection_record, validate_player_selection
 from .property_groups import hash_over_64
 from .form_to_object import get_data_from_active_editor
 from .action_validation import (
@@ -99,6 +100,7 @@ class glTF2ExportUserExtension:
         self.Extension = Extension
         self.properties = bpy.context.scene.skein_extension_properties
         self.character_controllers = {}
+        self.player_selection_sources = {}
         self.original_frame = bpy.context.scene.frame_current
     
     def passthrough_extension_data(self, passthrough_extensions, gltf2_plan, export_settings):
@@ -171,6 +173,30 @@ class glTF2ExportUserExtension:
                 visit(node, exported_nodes)
         from .clip_picker import record_discovery
         failures = []
+        if not is_discovery(export_settings):
+            # Follow final glTF references so filtered objects and unused data do not count.
+            exported_sinks = set()
+            def visit_data(value):
+                if id(value) in exported_sinks:
+                    return
+                exported_sinks.add(id(value))
+                if isinstance(value, dict):
+                    children = value.values()
+                elif isinstance(value, (list, tuple)):
+                    children = value
+                else:
+                    children = vars(value).values() if hasattr(value, '__dict__') else ()
+                for child in children:
+                    visit_data(child)
+            visit_data(scenes)
+            records = [record for sink_id, record in self.player_selection_sources.values()
+                       if sink_id in exported_sinks]
+            for diagnostic in validate_player_selection(records):
+                message = f'{diagnostic["field"]}: {diagnostic["message"]}'
+                if diagnostic['severity'] == 'ERROR':
+                    failures.append(message)
+                else:
+                    print('Skein WARNING: ' + message)
         for node_id, (node, name, data) in self.character_controllers.items():
             if node_id not in exported_nodes:
                 continue
@@ -187,7 +213,7 @@ class glTF2ExportUserExtension:
             if diagnostics:
                 failures.append(format_diagnostics(name, diagnostics))
         if failures:
-            message = 'Skein CharacterController validation failed:\n' + '\n'.join(failures)
+            message = 'Skein character validation failed:\n' + '\n'.join(failures)
             print(message)
             # Older exporters swallow hook errors. Their callbacks still run before
             # writing, so keep the same validation guarantee when is_critical is absent.
@@ -326,6 +352,9 @@ class glTF2ExportUserExtension:
     # def animation_action_hook(self, gltf2_animation, blender_object, blender_action_data, export_settings):
     #     print("debug: animation_action_hook")
     def gather_skein_two(self, source, sink):
+        record = get_source_selection_record(source)
+        if record[1] or record[2]:
+            self.player_selection_sources[(id(sink), source.as_pointer())] = (id(sink), record)
         if "skein_two" in dir(source):
             objs = []
             skein_property_groups = bpy.context.window_manager.skein_property_groups

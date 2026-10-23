@@ -10,6 +10,7 @@ import bpy
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import extension
+from extension.player_selection import PLAYER_CONTROLLED
 from extension.action_validation import CHARACTER_CONTROLLER as TYPE
 from extension.form_to_object import get_data_from_active_editor
 from extension.object_to_form import object_to_form
@@ -32,6 +33,9 @@ class ControllerClipboardTests(unittest.TestCase):
         extension.register()
         bpy.context.preferences.addons.new().module = 'extension'
         cls.registry = json.loads(REGISTRY_PATH.read_text())
+        cls.registry.setdefault(PLAYER_CONTROLLED, dict(kind='Struct', typePath=PLAYER_CONTROLLED,
+            shortPath='PlayerControlled', reflectTypes=['Component'],
+            properties={'enabled': {'type': {'$ref': '#/$defs/bool'}}}))
         bpy.data.texts.new('skein-registry.json').write(json.dumps(cls.registry))
         process_registry(bpy.context, cls.registry)
         cls.clipboard = bpy.context.window_manager.clipboard
@@ -111,6 +115,21 @@ class ControllerClipboardTests(unittest.TestCase):
         form.actions.entries[0].value.clip = 'Different'
         self.assertEqual(self.read(self.source), DATA)
         self.assertEqual(bpy.context.window_manager.clipboard, text)
+
+    def test_player_markers_are_neither_copied_nor_replaced(self):
+        for obj, enabled in ((self.source, True), (self.target, False)):
+            bpy.context.view_layer.objects.active = obj
+            bpy.context.window_manager.selected_component = PLAYER_CONTROLLED
+            bpy.ops.object.insert_component()
+            object_to_form(obj.skein_two[-1], hash_over_64(PLAYER_CONTROLLED), {'enabled': enabled})
+        envelope = json.loads(self.copy_source())
+        self.assertEqual(envelope, dict(schema='arforge.character-controller/v1', type_path=TYPE, data=DATA))
+        for _ in range(2):
+            self.assertEqual(self.paste(), {'FINISHED'})
+            self.assertEqual([component.selected_type_path for component in self.target.skein_two], [PLAYER_CONTROLLED, TYPE])
+            self.assertEqual(get_data_from_active_editor(self.target.skein_two[0], hash_over_64(PLAYER_CONTROLLED)), {'enabled': False})
+            self.assertEqual(self.read(index=1), DATA)
+        self.assertEqual(get_data_from_active_editor(self.source.skein_two[1], hash_over_64(PLAYER_CONTROLLED)), {'enabled': True})
 
     def test_missing_context_disables_operators(self):
         from types import SimpleNamespace
