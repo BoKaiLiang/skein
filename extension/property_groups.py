@@ -176,12 +176,35 @@ def make_property(
                         print("unknown Enum type: ", component["type"], "\n  ", type_path)
                     return
         case "List":
-            # Vecs/Lists are not well handled yet
+            element = make_property(
+                skein_property_groups, registry, component["items"]["type"]["$ref"]
+            )
+            if element is None:
+                # Preserve the existing empty-list behavior for unsupported item types.
+                skein_property_groups[type_path] = type(hash_type_path(capitalize_path(type_path)), (ComponentData,), {
+                    '__annotations__': {},
+                    "force_default": "list",
+                })
+                bpy.utils.register_class(skein_property_groups[type_path])
+                return skein_property_groups[type_path]
+            # CollectionProperty requires a PropertyGroup, including for scalar items.
+            entry_path = type_path + "::skein_list_entry"
+            entry = type(hash_type_path(entry_path), (ComponentData,), {
+                '__annotations__': {
+                    "value": bpy.props.PointerProperty(
+                        type=element, override={"LIBRARY_OVERRIDABLE"}
+                    ) if inspect.isclass(element) else element,
+                },
+            })
+            bpy.utils.register_class(entry)
+            skein_property_groups[entry_path] = entry
             skein_property_groups[type_path] = type(hash_type_path(capitalize_path(type_path)), (ComponentData,), {
-                '__annotations__': {},
-                # force_default bypasses recursion and forces
-                # an empty data structure in the output
-                "force_default": "list"
+                '__annotations__': {
+                    "entries": bpy.props.CollectionProperty(
+                        type=entry, override={"LIBRARY_OVERRIDABLE"}
+                    ),
+                },
+                "_skein_is_list": True,
             })
             bpy.utils.register_class(
                 skein_property_groups[type_path]

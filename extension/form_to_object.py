@@ -5,6 +5,10 @@ def get_data_from_active_editor(context, context_key):
     typical context_key is the type_path of the Component
     """
     if context_key not in context:
+        # Older .blend files have no storage for list fields added by a new schema.
+        value = getattr(context, context_key, None)
+        if getattr(value, "_skein_is_list", False) or getattr(value, "force_default", None) == "list":
+            return []
         return {}
     
     # The current PropertyGroup we're working with
@@ -13,6 +17,16 @@ def get_data_from_active_editor(context, context_key):
     # get the annotations, which will give us all of the field names
     # and their value types for this PropertyGroup
     annotations = getattr(obj, "__annotations__")
+
+    if getattr(obj, "_skein_is_list", False):
+        values = []
+        for entry in obj.entries:
+            property = entry.__annotations__["value"]
+            if property.function.__name__ == "PointerProperty":
+                values.append(get_data_from_active_editor(entry, "value"))
+            else:
+                values.append(entry.value)
+        return values
 
     # Handle core::option::Option specially, before other enums
     # because "None" and "Some" have special meaning: null and "just the value"

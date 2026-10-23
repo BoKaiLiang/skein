@@ -1,8 +1,10 @@
 import bpy # type: ignore
 import json
 import inspect
+import textwrap
 
 from .property_groups import hash_over_64
+from .action_validation import CHARACTER_CONTROLLER, get_object_action_diagnostics
 
 # ---------------------------------- #
 #  Skein Panel for adding components #
@@ -180,6 +182,11 @@ def draw_generic_panel(context, obj, layout, execute_mode, skein_preset_panel_id
             "active_component_index"
         )
 
+        if execute_mode == "object" and any(
+            component.selected_type_path == CHARACTER_CONTROLLER for component in obj.skein_two
+        ):
+            draw_action_diagnostics(layout, obj)
+
         # build the form ui
         # obj_skein is an array of component data
         obj_skein = obj.skein_two
@@ -212,10 +219,26 @@ def draw_generic_panel(context, obj, layout, execute_mode, skein_preset_panel_id
             else:
                 layout.prop(active_component_data, hash_over_64(type_path))
 
+def draw_action_diagnostics(layout, obj):
+    box = layout.box()
+    for line in textwrap.wrap(
+        "Additional actions are saved/exported only in this phase; playback and input execution are not enabled.",
+        width=55,
+    ):
+        box.label(text=line, icon='INFO')
+    for diagnostic in get_object_action_diagnostics(obj):
+        message = f'{diagnostic["field"]}: {diagnostic["message"]}'
+        icon = 'ERROR' if diagnostic['severity'] == 'ERROR' else 'INFO'
+        for line in textwrap.wrap(message, width=55):
+            box.label(text=line, icon=icon)
+
+
 def render_two(layout, context, context_key):
     if context_key not in context:
-        layout.label(text=context_key + " not in context")
-        return
+        # A schema update may introduce an empty list on an existing component.
+        if not getattr(getattr(context, context_key, None), "_skein_is_list", False):
+            layout.label(text=context_key + " not in context")
+            return
     
     # The current PropertyGroup we're working with
     obj = getattr(context, context_key)
@@ -234,6 +257,24 @@ def render_two(layout, context, context_key):
     # get the annotations, which will give us all of the field names
     # and their value types for this PropertyGroup
     annotations = getattr(obj, "__annotations__")
+
+    if getattr(obj, "_skein_is_list", False):
+        box = layout.box()
+        row = box.row(align=True)
+        row.label(text=f"{context_key} ({len(obj.entries)})")
+        row.context_pointer_set("skein_list", obj)
+        row.operator("wm.skein_list_add", text="", icon="ADD")
+        for index, entry in enumerate(obj.entries):
+            item = box.box()
+            row = item.row(align=True)
+            row.label(text=f"Item {index + 1}")
+            row.context_pointer_set("skein_list", obj)
+            row.operator("wm.skein_list_remove", text="", icon="REMOVE").index = index
+            if entry.__annotations__["value"].function.__name__ == "PointerProperty":
+                render_two(item, entry, "value")
+            else:
+                item.prop(entry, "value", text="Value")
+        return
 
     # Handle core::option::Option specially, before other enums
     # because "None" and "Some" have special meaning: null and "just the value"

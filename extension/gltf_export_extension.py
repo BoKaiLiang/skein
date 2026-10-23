@@ -3,6 +3,9 @@ import bpy
 
 from .property_groups import hash_over_64
 from .form_to_object import get_data_from_active_editor
+from .action_validation import (
+    get_object_controller_data, validate_character_controller, format_diagnostics,
+)
 
 # glTF extensions are named following a convention with known prefixes.
 # See: https://github.com/KhronosGroup/glTF/tree/main/extensions#about-gltf-extensions
@@ -78,12 +81,17 @@ def draw_export(context, layout):
 
 # Note: the class must have this exact name
 class glTF2ExportUserExtension:
+    # Blender otherwise logs extension errors and continues writing a broken GLB.
+    is_critical = True
+
     def __init__(self):
         # We need to wait until we create the gltf2UserExtension to import the gltf2 modules
         # Otherwise, it may fail because the gltf2 may not be loaded yet
         from io_scene_gltf2.io.com.gltf2_io_extensions import Extension # type: ignore
         self.Extension = Extension
         self.properties = bpy.context.scene.skein_extension_properties
+        self.character_controllers = {}
+        self.original_frame = bpy.context.scene.frame_current
     
     def passthrough_extension_data(self, passthrough_extensions, gltf2_plan, export_settings):
         passthrough_extensions.append(glTF_extension_name)
@@ -98,6 +106,9 @@ class glTF2ExportUserExtension:
         # self.report() doesn't seem available here because we aren't
         # in "Blender" we're in the "gltf2 extension"
         if self.properties.enabled:
+            data = get_object_controller_data(blender_object)
+            if data is not None:
+                self.character_controllers[id(gltf2_object)] = (gltf2_object, blender_object.name, data)
             try:
                 # if this is a node with a light and the KHR_lights_punctual extension is on
                 # then handle the light skein data
@@ -131,6 +142,56 @@ class glTF2ExportUserExtension:
         pass
     def gather_gltf_extensions_hook(self, gltf2_plan, export_settings):
         pass
+
+    def gather_gltf_hook(self, active_scene_idx, scenes, animations, export_settings):
+        """Validate only exported characters, after animation naming/merging."""
+        if not self.properties.enabled:
+            return
+        exported_nodes = set()
+
+        def visit(node, result):
+            if id(node) in result:
+                return
+            result.add(id(node))
+            for child in node.children or ():
+                visit(child, result)
+
+        for scene in scenes:
+            for node in scene.nodes or ():
+                visit(node, exported_nodes)
+        names = [animation.name for animation in animations]
+        failures = []
+        for node_id, (node, name, data) in self.character_controllers.items():
+            if node_id not in exported_nodes:
+                continue
+            diagnostics = validate_character_controller(data, names)
+            # A matching name alone is insufficient if it animates another model.
+            descendants = set()
+            visit(node, descendants)
+            actions = data.get('actions', [])
+            referenced = {action.get('clip') for action in actions if isinstance(action, dict)} if isinstance(actions, list) else set()
+            legacy = data.get('animations') or {}
+            referenced.update(legacy.get(field) for field in ('idle', 'move', 'move_clip', 'jump'))
+            for animation in animations:
+                if animation.name not in referenced:
+                    continue
+                if not any(id(channel.target.node) in descendants for channel in animation.channels or ()):
+                    diagnostics.append(dict(severity='ERROR', field='clips', message=f'Clip {animation.name!r} targets no node in this character hierarchy.'))
+            if diagnostics:
+                failures.append(format_diagnostics(name, diagnostics))
+        if failures:
+            message = 'Skein CharacterController validation failed:\n' + '\n'.join(failures)
+            print(message)
+            # Older exporters swallow hook errors. Their callbacks still run before
+            # writing, so keep the same validation guarantee when is_critical is absent.
+            def abort_export(_settings):
+                # The upstream save() restoration is skipped when validation aborts.
+                bpy.context.scene.frame_set(self.original_frame)
+                if bpy.context.window:
+                    bpy.context.window.cursor_set('DEFAULT')
+                raise RuntimeError(message)
+            export_settings['post_export_callbacks'].append(abort_export)
+            abort_export(export_settings)
     def gather_scene_hook(self, gltf2_scene, blender_scene, export_settings):
         if self.properties.enabled:
             self.gather_skein_two(blender_scene, gltf2_scene)

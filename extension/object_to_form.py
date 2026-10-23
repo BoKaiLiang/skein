@@ -16,6 +16,22 @@ def object_to_form(context, context_key, data):
     # and their value types for this PropertyGroup
     annotations = getattr(obj, "__annotations__")
 
+    if getattr(obj, "_skein_is_list", False):
+        if not isinstance(data, list):
+            raise TypeError(f"{context_key} expects a list")
+        obj.entries.clear()
+        for value in data:
+            entry = obj.entries.add()
+            property = entry.__annotations__["value"]
+            if property.function.__name__ == "PointerProperty":
+                # Initialize lazy pointer fields before recursing into the entry.
+                from .op_insert_component import touch_all_fields
+                touch_all_fields(entry, "value")
+                object_to_form(entry, "value", value)
+            else:
+                entry.value = value
+        return
+
     # Handle core::option::Option specially, before other enums
     # because "None" and "Some" have special meaning: null and "just the value"
     try:
@@ -24,7 +40,7 @@ def object_to_form(context, context_key, data):
             # and can set the data directly
             if data is None:
                 setattr(obj, "skein_enum_index", "None")
-            elif isinstance(data, list) or isinstance(data, dict):
+            elif annotations["Some"].function.__name__ == "PointerProperty":
                 setattr(obj, "skein_enum_index", "Some")
                 object_to_form(getattr(context, context_key), "Some", data)
             else:

@@ -2,6 +2,7 @@ import bpy # type: ignore
 import json
 from bpy.app.handlers import persistent
 from .op_apply_preset import register as register_op_apply_preset, unregister as unregister_op_apply_preset
+from .op_list import register as register_op_list, unregister as unregister_op_list
 from .cli_dump_component_data import dump_component_data # type: ignore
 from .cli_change_component_path import change_component_path # type: ignore
 from .op_insert_component import register as register_op_insert_component, unregister as unregister_op_insert_component
@@ -175,6 +176,7 @@ def register():
     register_op_trigger_collection_exporters()
     ## Preset Operations
     register_op_apply_preset()
+    register_op_list()
     # panel
     register_skein_panel()
     register_skein_sidepanel()
@@ -237,6 +239,7 @@ def unregister():
     unregister_op_trigger_collection_exporters()
     ## Preset Operations
     unregister_op_apply_preset()
+    unregister_op_list()
     # panel
     unregister_skein_panel()
     unregister_skein_sidepanel()

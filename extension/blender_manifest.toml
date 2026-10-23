@@ -3,8 +3,8 @@ schema_version = "1.0.0"
 # Example of manifest file for a Blender extension
 # Change the values according to your extension
 id = "bevy_skein"
-version = "0.1.16"
-name = "Bevy Skein"
+version = "0.1.17"
+name = "Bevy Skein (ARForge fork)"
 tagline = "Apply Bevy Components in Blender"
 maintainer = "Chris Biscardi <chris@christopherbiscardi.com>"
 # Supported types: "add-on", "theme"
