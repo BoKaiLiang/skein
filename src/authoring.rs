@@ -25,6 +25,20 @@ pub struct FieldEditor {
     pub field: String,
     /// Widget understood by the generic addon.
     pub widget: FieldWidget,
+    /// Optional sibling fields controlling Blender clip playback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub playback: Option<ClipPlayback>,
+}
+
+/// Sibling reflected fields used by local animation playback.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ClipPlayback {
+    /// Boolean field controlling repetition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loop_field: Option<String>,
+    /// Floating point field controlling playback speed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed_field: Option<String>,
 }
 
 /// Supported editor overrides.

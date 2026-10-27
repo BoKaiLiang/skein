@@ -14,7 +14,7 @@ tldr:
 This branch adds generic List editing, project-described animation dropdowns,
 whole-component Copy/Paste/Reset, automatic registry/default caching, and export
 validation. It targets Bevy 0.19.0, Rust `bevy_skein` 0.6.0, and Blender 5.2+.
-The addon version is 0.1.23. The upstream compatibility table below describes
+The addon version is 0.1.24. The upstream compatibility table below describes
 upstream releases, not this fork's tested support.
 
 Remove the official addon, install this fork's ZIP with Blender's **Install from
@@ -48,14 +48,20 @@ The project validation method receives current final-export records as
 It returns `{"diagnostics":[{"severity":"ERROR","object":"...","field":"...","message":"..."}]}`.
 Local schema and Clip checks run offline. An unavailable project check warns
 that it is unverified; returned errors and malformed responses abort before a
-last-good GLB is replaced. Previews use advertised methods and request-field
-mappings, keeping runtime playback policy in the project.
+last-good GLB is replaced. Clip fields offer Blender-local playback using the
+actual exporter source mapping. Optional `FieldEditor.playback` names boolean
+`loop_field` and float `speed_field` siblings on the defining struct. Stop,
+save/export, load and Undo/Redo restore editor state. Unsupported or ambiguous
+sources are refused. Optional remote preview methods remain available to
+projects; runtime playback policy stays in the project.
 
 Authoring regression commands, using a test-owned Blender process:
 
 ```sh
 python3 tools/test_authoring.py
 python3 tools/test_connection.py
+Blender --background --factory-startup --offline-mode --python-exit-code 1 --python tools/test_panel.py
+Blender --background --factory-startup --offline-mode --python-exit-code 1 --python tools/test_local_preview.py
 Blender --background --factory-startup --online-mode --python-exit-code 1 --python tools/test_authoring_sync.py
 Blender --background --factory-startup --offline-mode --python-exit-code 1 --python tools/test_lists.py
 Blender --background --factory-startup --online-mode --python-exit-code 1 --python tools/test_action_preview.py

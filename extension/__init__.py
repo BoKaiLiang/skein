@@ -1,6 +1,6 @@
 import bpy # type: ignore
 import json
-from . import clip_picker, action_preview, component_values, authoring_sync
+from . import clip_picker, action_preview, component_values, authoring_sync, local_preview
 from bpy.app.handlers import persistent
 from .op_apply_preset import register as register_op_apply_preset, unregister as unregister_op_apply_preset
 from .op_list import register as register_op_list, unregister as unregister_op_list
@@ -179,6 +179,7 @@ def register():
     register_op_apply_preset()
     register_op_list()
     clip_picker.register()
+    local_preview.register()
     action_preview.register()
     component_values.register()
     # panel
@@ -206,6 +207,7 @@ def register():
 def unregister():
     if on_post_blend_file_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(on_post_blend_file_load)
+    local_preview.unregister()
     authoring_sync.unregister()
     global_skein = bpy.context.window_manager.skein
     skein_property_groups = bpy.context.window_manager.skein_property_groups

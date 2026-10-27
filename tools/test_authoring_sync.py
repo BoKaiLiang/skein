@@ -107,6 +107,56 @@ class AuthoringSyncTests(unittest.TestCase):
         self.assertNotEqual(self.read('skein-cache-info.json')['fetched_at'], 'old')
         self.assertFalse(any(text.name.endswith('.001') for text in bpy.data.texts))
 
+    def test_identical_polls_leave_saved_file_and_cached_provenance_unchanged(self):
+        url = 'http://test:1'
+        optional = {'skein/presets': PRESETS, 'skein/authoring': DESCRIPTION}
+        sync._apply(url, self.original, optional, [])
+        cached = {text.name: text.as_string() for text in bpy.data.texts}
+        fetched_at = sync.status()['fetched_at']
+        contacted_at = sync.status().get('last_contact_at')
+        with tempfile.TemporaryDirectory(prefix='skein-clean-cache-') as directory:
+            bpy.ops.wm.save_as_mainfile(filepath=str(Path(directory) / 'saved.blend'), check_existing=False)
+            self.assertFalse(bpy.data.is_dirty)
+            with patch.object(sync, '_write', wraps=sync._write) as write, patch.object(sync, '_rebuild', wraps=sync._rebuild) as rebuild:
+                for _ in range(3):
+                    sync._results.put((sync._generation, url, self.original, optional, [], None))
+                    sync.poll()
+                print('Saved file dirty after identical sync polls:', bpy.data.is_dirty)
+                write.assert_not_called()
+                rebuild.assert_not_called()
+            self.assertFalse(bpy.data.is_dirty)
+        self.assertEqual({text.name: text.as_string() for text in bpy.data.texts}, cached)
+        self.assertEqual(sync.status()['fetched_at'], fetched_at)
+        self.assertNotEqual(sync.status().get('last_contact_at'), contacted_at)
+        self.assertNotIn('last_contact_at', self.read('skein-cache-info.json'))
+        self.assertEqual(self.value(), dict(clip='Authored', speed=8.0))
+
+    def test_changed_default_writes_only_changed_cache_and_provenance(self):
+        url = 'http://test:1'
+        optional = {'skein/presets': PRESETS, 'skein/authoring': DESCRIPTION}
+        sync._apply(url, self.original, optional, [])
+        fetched_at = sync.status()['fetched_at']
+        changed = {'skein/presets': {TYPE: {'default': dict(clip='New default', speed=4.0)}},
+                   'skein/authoring': DESCRIPTION}
+        with patch.object(sync, '_write', wraps=sync._write) as write, patch.object(sync, '_rebuild', wraps=sync._rebuild) as rebuild:
+            sync._apply(url, self.original, changed, [])
+            self.assertEqual([call.args[0] for call in write.call_args_list], ['skein-presets.json', 'skein-cache-info.json'])
+            rebuild.assert_not_called()
+        self.assertNotEqual(sync.status()['fetched_at'], fetched_at)
+        self.assertEqual(self.read('skein-presets.json'), changed['skein/presets'])
+        self.assertEqual(self.value(), dict(clip='Authored', speed=8.0))
+
+    def test_identical_dataset_from_new_endpoint_updates_only_provenance(self):
+        optional = {'skein/presets': PRESETS, 'skein/authoring': DESCRIPTION}
+        sync._apply('http://test:1', self.original, optional, [])
+        fetched_at = sync.status()['fetched_at']
+        with patch.object(sync, '_write', wraps=sync._write) as write, patch.object(sync, '_rebuild', wraps=sync._rebuild) as rebuild:
+            sync._apply('http://other:2', self.original, optional, [])
+            self.assertEqual([call.args[0] for call in write.call_args_list], ['skein-cache-info.json'])
+            rebuild.assert_not_called()
+        self.assertNotEqual(sync.status()['fetched_at'], fetched_at)
+        self.assertEqual(self.read('skein-cache-info.json')['endpoint'], 'http://other:2')
+
     def test_offline_bootstrap_restores_cached_forms_and_metadata(self):
         with patch.object(sync, '_online', return_value=False), patch('extension.connection.post') as post:
             sync.bootstrap()
@@ -402,6 +452,13 @@ class AuthoringSyncTests(unittest.TestCase):
         self.assertEqual(self.read('skein-presets.json')[TYPE], PRESETS[TYPE])
         self.assertNotIn('BadLimit', self.read('skein-presets.json'))
         from extension.component_values import default_reason
+        self.assertIn('cannot be represented losslessly', default_reason('BadLimit'))
+        before = {text.name: text.as_string() for text in bpy.data.texts}
+        with patch.object(sync, '_write', wraps=sync._write) as write:
+            sync._apply('http://test:1', self.original,
+                        {'skein/presets': dict(PRESETS, BadLimit={'default': None}), 'skein/authoring': DESCRIPTION}, [])
+            write.assert_not_called()
+        self.assertEqual({text.name: text.as_string() for text in bpy.data.texts}, before)
         self.assertIn('cannot be represented losslessly', default_reason('BadLimit'))
         self.assertEqual(self.value(), dict(clip='Authored', speed=8.0))
 

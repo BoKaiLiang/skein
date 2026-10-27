@@ -47,6 +47,17 @@ def validate_description(value, registry):
             raise ValueError(f'{type_path}.{field}: animation clip editor requires a String field')
         if (type_path, field) in seen:
             raise ValueError(f'Duplicate authoring field: {type_path}.{field}')
+        playback = item.get('playback')
+        if playback is not None:
+            if not isinstance(playback, dict):
+                raise ValueError('Invalid clip playback settings')
+            for key, expected in (('loop_field', 'boolean'), ('speed_field', 'float')):
+                if key not in playback:
+                    continue
+                sibling = _text(playback[key], key)
+                schema = registry.get(reference(registry.get(type_path, {}).get('properties', {}).get(sibling, {})), {})
+                if schema.get('kind') != 'Value' or schema.get('type') != expected:
+                    raise ValueError(f'{type_path}.{sibling}: playback requires a {expected} field')
         seen.add((type_path, field))
     seen.clear()
     for operation in value['previews']:
@@ -91,6 +102,11 @@ def cached_description():
         except (ValueError, AttributeError, TypeError, KeyError):
             pass
     return empty_description()
+
+
+def field_editor(description, type_path, field):
+    return next((item for item in description.get('fields', [])
+                 if item['type_path'] == type_path and item['field'] == field), None)
 
 
 def field_widget(description, type_path, field):

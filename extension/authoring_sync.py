@@ -16,7 +16,7 @@ _pending = None
 _next_refresh = 0
 _registered = False
 _description = authoring.empty_description()
-_status = dict(state='offline', message='Cached authoring data; runtime not connected.', endpoint='', fetched_at='')
+_status = dict(state='offline', message='Cached authoring data; runtime not connected.', endpoint='', fetched_at='', last_contact_at='')
 RETRY_SECONDS = 10
 
 
@@ -66,7 +66,7 @@ def _presets(value, registry, errors):
                 validate_value(registry, type_path, preset)
             except (ValueError, TypeError, OverflowError, RecursionError) as error:
                 if name == 'default':
-                    errors[type_path] = 'Rust Default cannot be represented losslessly: ' + str(error)
+                    errors[type_path] = 'Default values cannot be represented losslessly: ' + str(error)
                 continue
             supported[name] = preset
         if supported:
@@ -144,7 +144,7 @@ def restore_cache(context=None):
     _generation += 1
     _pending = None
     _description = authoring.empty_description()
-    _status.update(state='offline', message='Cached authoring data; runtime not connected.', endpoint='', fetched_at='')
+    _status.update(state='offline', message='Cached authoring data; runtime not connected.', endpoint='', fetched_at='', last_contact_at='')
     try:
         info = _read('skein-cache-info.json', {})
         if isinstance(info, dict) and info.get('schema') == 'skein.cache/v1':
@@ -232,24 +232,48 @@ def _apply(url, registry, optional, warnings):
         except (ValueError, TypeError, KeyError, AttributeError):
             presets = {}
             warnings.append('Incompatible cached defaults discarded.')
-    json.dumps(description_value, allow_nan=False)
-    json.dumps(presets, allow_nan=False)
-    for name in ('skein-registry.json', 'skein-presets.json', 'skein-authoring.json', 'skein-cache-info.json'):
+    payloads = {'skein-registry.json': registry, 'skein-presets.json': presets,
+                'skein-authoring.json': description_value}
+    changes = {}
+    for name, value in payloads.items():
+        json.dumps(value, allow_nan=False)
+        try:
+            unchanged = name in bpy.data.texts and _read(name, None) == value
+        except (ValueError, TypeError):
+            unchanged = False
+        if not unchanged:
+            changes[name] = value
+    try:
+        info = _read('skein-cache-info.json', {})
+    except (ValueError, TypeError):
+        info = {}
+    if not isinstance(info, dict):
+        info = {}
+    contacted_at = datetime.now(timezone.utc).isoformat()
+    if (changes or info.get('schema') != 'skein.cache/v1' or info.get('endpoint') != url
+            or info.get('default_errors', {}) != default_errors
+            or not isinstance(info.get('fetched_at'), str) or not info['fetched_at']):
+        fetched_at = contacted_at
+        changes['skein-cache-info.json'] = dict(schema='skein.cache/v1', endpoint=url,
+                                              fetched_at=fetched_at, default_errors=default_errors)
+    else:
+        fetched_at = info['fetched_at']
+    # Preflight every changed cache before rebinding forms or mutating any Text.
+    for name, value in changes.items():
+        json.dumps(value, allow_nan=False)
         text = bpy.data.texts.get(name)
         if text is not None and not text.is_editable:
             raise ValueError(f'Cached {name} is read-only; authoring data was kept')
     if json.loads(context.window_manager.skein.registry) != registry:
         _rebuild(context, registry)
-    fetched_at = datetime.now(timezone.utc).isoformat()
-    _write('skein-registry.json', registry)
-    _write('skein-presets.json', presets)
-    _write('skein-authoring.json', description_value)
-    _write('skein-cache-info.json', dict(schema='skein.cache/v1', endpoint=url, fetched_at=fetched_at, default_errors=default_errors))
+    for name, value in changes.items():
+        _write(name, value)
     _description = description_value
+    _status['last_contact_at'] = contacted_at
     _status.update(state='unverified' if warnings else 'ready', endpoint=url, fetched_at=fetched_at,
                    message=('Unverified cached authoring data. ' + ' '.join(warnings) if warnings else
                             'Authoring data synced from runtime.' +
-                            (' Some Rust defaults are unavailable; see Reset for the reason.' if default_errors else '')))
+                            (' Some component defaults are unavailable; see Default for the reason.' if default_errors else '')))
 
 
 def poll():

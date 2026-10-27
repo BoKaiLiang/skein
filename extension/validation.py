@@ -1,5 +1,7 @@
 """Generic local checks and project-advertised export preflight."""
 import json
+import re
+import textwrap
 
 from .authoring import empty_description, validate_description, clip_fields, clip_diagnostics
 from .connection import Unavailable, RpcError
@@ -88,5 +90,24 @@ def get_owner_diagnostics(owner, registry=None):
     return diagnostics
 
 
-def format_diagnostic(item):
-    return f'{item["object"]}: {item["field"]}: {item["message"]}'
+def _short_field(field):
+    field = re.sub(r'(?:[A-Za-z_]\w*::)+', '', field)
+    root, separator, rest = field.partition('.')
+    return rest if separator and root[:1].isupper() else field
+
+
+def format_diagnostic(item, details=False):
+    """Keep severity visible in reports, with technical paths available on demand."""
+    severity = item.get('severity', 'INFO').title()
+    field = item.get('field', '') if details else _short_field(item.get('field', ''))
+    location = ': '.join(value for value in (item.get('object', ''), field) if value)
+    message = item.get('message', '')
+    if not details:
+        message = re.sub(r'(?:[A-Za-z_]\w*::)+', '', message)
+    return f'{severity}: ' + (location + ': ' if location else '') + message
+
+
+def diagnostic_label(item):
+    """Short Inspector text; expanded Details retains the complete diagnostic."""
+    short = dict(item, object='')
+    return textwrap.shorten(format_diagnostic(short).split(': ', 1)[1], width=180, placeholder='…')

@@ -224,33 +224,14 @@ class PreviewTests(unittest.TestCase):
             self.start(props)
         self.assertEqual(self.requests, [])
 
-    def test_panel_buttons_use_metadata_labels_and_capture_real_targets(self):
+    def test_panel_does_not_offer_remote_runtime_preview(self):
         from extension.skein_panel import draw_generic_panel
-        from tools.test_lists import RecordingLayout
-        operations = []
-        class Layout(RecordingLayout):
-            def operator(self, name, **kwargs):
-                props = SimpleNamespace()
-                operations.append((name, kwargs, props))
-                return props
-            def prop_search(self, *_args, **_kwargs):
-                pass
-            def template_list(self, *_args, **_kwargs):
-                pass
-            def popover(self, *_args, **_kwargs):
-                pass
-        draw_generic_panel(bpy.context, self.obj, Layout(), 'object', 'OBJECT_PT_skein_preset_panel')
-        starts = [(kwargs, props) for name, kwargs, props in operations if name == 'wm.skein_action_preview']
-        self.assertEqual(len(starts), 2)
-        for index, (kwargs, props) in enumerate(starts):
-            self.assertEqual(kwargs['text'], 'Paint sample')
-            self.assertEqual(props.target_object, self.obj.name)
-            self.assertEqual(self.obj.path_resolve(props.target_path), self.value.swatches.entries[index].value)
-            self.assertEqual(self.start(vars(props)), {'FINISHED'})
-        stops = [props for name, _, props in operations if name == 'wm.skein_stop_action_preview']
-        self.assertEqual(len(stops), 1)
-        self.assertEqual(vars(stops[0]), dict(component_type=COMPONENT, list_field='swatches'))
-        self.assertEqual(bpy.ops.wm.skein_stop_action_preview(**vars(stops[0])), {'FINISHED'})
+        from tools.test_panel import Layout
+        layout = Layout()
+        draw_generic_panel(bpy.context, self.obj, layout, 'object', 'OBJECT_PT_skein_preset_panel')
+        self.assertTrue(all(name not in {'wm.skein_action_preview', 'wm.skein_stop_action_preview'}
+                            for name, _ in layout.operations))
+        self.assertEqual(self.requests, [])
 
     def test_generic_transport_errors_are_reported(self):
         for code, message in [(-32601, 'Project preview method is missing'),

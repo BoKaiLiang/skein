@@ -211,10 +211,10 @@ def _default(path):
             raise ValueError(reason)
     text = bpy.data.texts.get('skein-presets.json')
     if text is None:
-        raise ValueError('Rust Default unavailable: sync the runtime presets first')
+        raise ValueError('Default unavailable: sync component presets first')
     presets = json.loads(text.as_string())
     if path not in presets or 'default' not in presets[path]:
-        raise ValueError('Rust Default unavailable for this component in the cached presets')
+        raise ValueError('Default unavailable for this component in the cached presets')
     return presets[path]['default']
 
 
@@ -343,7 +343,7 @@ class PasteComponent(_Target, bpy.types.Operator):
 
 class ResetComponent(_Target, bpy.types.Operator):
     bl_idname = 'wm.skein_component_reset'
-    bl_label = 'Reset Component to Rust Default'
+    bl_label = 'Reset Component to Default'
     bl_options = {'REGISTER', 'UNDO'}
     operation = 'reset'
     __annotations__ = _properties()

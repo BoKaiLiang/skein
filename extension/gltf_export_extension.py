@@ -43,7 +43,7 @@ class SkeinExtensionProperties(bpy.types.PropertyGroup):
         ) # type: ignore
     clip_export_mode: bpy.props.EnumProperty(
         name="Picker export mode", default='NLA_TRACKS',
-        items=[('NLA_TRACKS', 'NLA Tracks', 'Use exported NLA track names'),
+        items=[('NLA_TRACKS', 'Animation Tracks', 'Use the final exported animation track names'),
                ('ACTIONS', 'Actions', 'Use the glTF Actions export mode'),
                ('ACTIVE_ACTIONS', 'Active Actions', 'Use active actions'),
                ('SCENE', 'Scene', 'Bake scene animation')],
@@ -87,12 +87,40 @@ class glTF2ExportUserExtension:
     def __init__(self):
         from io_scene_gltf2.io.com.gltf2_io_extensions import Extension
         from .clip_picker import capture_state
+        from . import local_preview
+        local_preview.stop()
         self.Extension = Extension
         self.properties = bpy.context.scene.skein_extension_properties
         self.nodes = {}
         self.sources = {}
         self.source_errors = {}
+        self.preview_actions = {}
+        self.preview_tracks = []
         self.restore_state = capture_state(bpy.context)
+
+    def gather_tracks_hook(self, source, groups, settings):
+        for group in groups.values():
+            target = source if group.on_type == 'OBJECT' else getattr(source.data, 'shape_keys', None)
+            data = target.animation_data if target else None
+            if data is None or group.on_type not in ('OBJECT', 'KEY'):
+                continue
+            self.preview_tracks.append(dict(object=source, target=target, mode='NLA',
+                clip=group.name, tracks=tuple(data.nla_tracks[t.idx] for t in group.tracks),
+                start=min(t.frame_start for t in group.tracks), end=max(t.frame_end for t in group.tracks)))
+
+    def animation_action_hook(self, animation, source, action_data, settings):
+        bindings = []
+        for slot in action_data.slots:
+            target = source if slot.target_id_type == 'OBJECT' else getattr(source.data, 'shape_keys', None)
+            if target is not None and slot.target_id_type in ('OBJECT', 'KEY'):
+                start, end = action_data.action.frame_range
+                bindings.append(dict(object=source, target=target, mode='ACTION',
+                    action=action_data.action, slot=slot.slot, start=float(start), end=float(end)))
+        self.preview_actions[id(animation)] = bindings
+
+    def merge_animation_extensions_hook(self, source, destination, settings):
+        if id(source) in self.preview_actions or id(destination) in self.preview_actions:
+            self.preview_actions.setdefault(id(destination), []).extend(self.preview_actions.get(id(source), []))
 
     def passthrough_extension_data(self, passthrough_extensions, gltf2_plan, export_settings):
         passthrough_extensions.append(glTF_extension_name)
@@ -160,7 +188,31 @@ class glTF2ExportUserExtension:
             # Duplicate names anywhere in the final GLB remain ambiguous.
             clips[name] = [animation.name for animation in animations if animation.name in own]
             if is_discovery(settings):
-                record_discovery(name, clips[name])
+                owner = bpy.data.objects.get(name)
+                bindings = {}
+                for animation in animations:
+                    if animation.name not in own:
+                        continue
+                    candidates = self.preview_actions.get(id(animation))
+                    if candidates is None:
+                        candidates = [item for item in self.preview_tracks if item['clip'] == animation.name]
+                    selected = []
+                    for item in candidates:
+                        parent = item['object']
+                        while parent is not None and parent != owner:
+                            parent = parent.parent
+                        if parent == owner:
+                            item = dict(item)
+                            for uuid, vnode in settings.get('vtree').nodes.items():
+                                if vnode.blender_object == item['object']:
+                                    key = item.get('clip', item.get('action').name if item.get('action') else '')
+                                    limits = settings.get('ranges', {}).get(uuid, {}).get(key)
+                                    if limits:
+                                        item['start'], item['end'] = limits['start'], limits['end']
+                                    break
+                            selected.append(item)
+                    bindings.setdefault(animation.name, []).extend(selected)
+                record_discovery(name, clips[name], bindings)
         if is_discovery(settings) or not self.properties.enabled:
             return
         local_failures = [message for (sink_id, _source_id), message in self.source_errors.items()

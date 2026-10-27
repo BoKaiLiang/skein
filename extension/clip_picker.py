@@ -18,8 +18,9 @@ def is_discovery(settings):
     return _discovery is not None and settings.get('gltf_export_id') == _discovery['id']
 
 
-def record_discovery(name, names):
+def record_discovery(name, names, bindings=None):
     _discovery['clips'][name] = names
+    _discovery.setdefault('bindings', {})[name] = bindings or {}
 
 
 def cached_clip_names(obj):
@@ -30,6 +31,11 @@ def cached_clip_names(obj):
 def cached_clip_error(obj):
     entry = _cache.get(obj.as_pointer())
     return entry.get('error') if entry else None
+
+
+def cached_clip_bindings(obj, clip):
+    entry = _cache.get(obj.as_pointer(), {})
+    return entry.get('bindings', {}).get(clip, [])
 
 
 def _animation_signature(animation):
@@ -67,7 +73,8 @@ def clip_cache_signature(context, obj):
                                    len(curve.keyframe_points))
                                   for curve in bag.fcurves)
         actions.append((action.as_pointer(), action.name,
-                        tuple((slot.identifier, slot.target_id_type) for slot in action.slots), tuple(curves)))
+                        tuple((slot.identifier, slot.target_id_type) for slot in action.slots),
+                        tuple(action.frame_range), tuple(curves)))
     scene = context.scene
     layers = []
     def layer_signature(layer):
@@ -81,44 +88,97 @@ def clip_cache_signature(context, obj):
             tuple(objects), tuple(actions), tuple(layers))
 
 
+def _alive(value):
+    try:
+        return value is not None and bool(value.as_pointer()) and bool(value.id_data.as_pointer())
+    except ReferenceError:
+        return False
+
+
 def capture_state(context):
-    """Restore editor state after discovery or an aborted export."""
-    frame = (context.scene.frame_current, context.scene.frame_subframe)
-    active = context.view_layer.objects.active
+    """Keep fixed scene/view-layer references even if the user changes scenes."""
+    scene, view_layer, window = context.scene, context.view_layer, context.window
+    frame = (scene.frame_current, scene.frame_subframe)
+    active = view_layer.objects.active
     mode = active.mode if active else 'OBJECT'
-    selected = tuple(context.selected_objects)
-    animations = []
+    selected = {item.as_pointer() for item in context.selected_objects}
+    animations, transforms, properties, visibility = [], [], [], []
+    def copy_value(value):
+        if hasattr(value, 'to_dict'):
+            return value.to_dict()
+        if hasattr(value, 'to_list'):
+            return value.to_list()
+        return value
     for item in bpy.data.objects:
-        keys = getattr(item.data, 'shape_keys', None)
-        for source in (item, keys):
+        visibility.append((item, item.hide_viewport, item.hide_render))
+        for target in [item] + (list(item.pose.bones) if item.pose else []):
+            transforms.append((target, {name: tuple(getattr(target, name)) for name in
+                ('location', 'rotation_euler', 'rotation_quaternion', 'rotation_axis_angle', 'scale')}))
+            properties.append((target, {name: copy_value(value) for name, value in target.items()}))
+        shape_keys = getattr(item.data, 'shape_keys', None)
+        if shape_keys:
+            properties.append((shape_keys, {name: copy_value(value) for name, value in shape_keys.items()}))
+        for source in (item, shape_keys):
             data = source.animation_data if source else None
             if data:
                 animations.append((data, data.action, data.action_slot, data.use_nla,
                     [(track, track.mute, track.is_solo) for track in data.nla_tracks]))
+    shape_values = [(key, key.value) for item in bpy.data.objects
+                    for key in (getattr(item.data, 'shape_keys', None).key_blocks
+                                if getattr(item.data, 'shape_keys', None) else ())]
+    def set_mode(value):
+        if (_alive(window) and _alive(scene) and _alive(view_layer)
+                and window.scene == scene and window.view_layer == view_layer):
+            current = view_layer.objects.active
+            if current and current.mode != value:
+                with bpy.context.temp_override(window=window, scene=scene, view_layer=view_layer):
+                    bpy.ops.object.mode_set(mode=value)
     def restore():
-        if context.object and context.object.mode != 'OBJECT':
-            bpy.ops.object.mode_set(mode='OBJECT')
+        set_mode('OBJECT')
         for data, action, slot, use_nla, tracks in animations:
-            data.action = action
-            if slot and action:
+            if not _alive(data):
+                continue
+            data.action = action if _alive(action) else None
+            if _alive(slot) and _alive(action):
                 data.action_slot = slot
             data.use_nla = use_nla
             for track, mute, solo in tracks:
-                track.mute, track.is_solo = mute, solo
-        context.scene.frame_set(frame[0], subframe=frame[1])
-        for item in context.view_layer.objects:
-            item.select_set(item in selected)
-        context.view_layer.objects.active = active
-        if active and mode != 'OBJECT':
-            bpy.ops.object.mode_set(mode=mode)
-        if context.window:
-            context.window.cursor_set('DEFAULT')
+                if _alive(track):
+                    track.mute, track.is_solo = mute, solo
+        if _alive(scene):
+            scene.frame_set(frame[0], subframe=frame[1])
+        if _alive(view_layer):
+            view_layer.update()
+        for target, values in transforms:
+            if _alive(target):
+                for name, value in values.items():
+                    setattr(target, name, value)
+        for key, value in shape_values:
+            if _alive(key):
+                key.value = value
+        for target, values in properties:
+            if _alive(target):
+                for name, value in values.items():
+                    target[name] = value
+        for item, viewport, render in visibility:
+            if _alive(item):
+                item.hide_viewport, item.hide_render = viewport, render
+        if _alive(view_layer):
+            for item in view_layer.objects:
+                item.select_set(item.as_pointer() in selected, view_layer=view_layer)
+            if _alive(active) and view_layer.objects.get(active.name) == active:
+                view_layer.objects.active = active
+                set_mode(mode)
+        if _alive(window):
+            window.cursor_set('DEFAULT')
     return restore
 
 
 def refresh_clip_cache(context, obj):
     """Discover with bounded preview settings; the real export always validates again."""
     global _discovery
+    from . import local_preview
+    local_preview.stop()
     if context.mode != 'OBJECT':
         raise RuntimeError('Clip discovery requires Object Mode; return to Object Mode to refresh exported clips.')
     if _discovery is not None:
@@ -141,7 +201,8 @@ def refresh_clip_cache(context, obj):
         if obj.name not in _discovery['clips']:
             raise RuntimeError('Skein export hook did not discover this Object. Enable Skein in Blender Preferences and ensure the Object is exported.')
         names = _discovery['clips'][obj.name]
-        _cache[obj.as_pointer()] = {'names': names, 'error': None}
+        _cache[obj.as_pointer()] = {'names': names, 'error': None,
+            'bindings': _discovery.get('bindings', {}).get(obj.name, {})}
         return names
     except Exception as error:
         _cache[obj.as_pointer()] = {'names': [], 'error': str(error)}
@@ -159,8 +220,11 @@ def refresh_clip_cache(context, obj):
 
 def _refresh_pending():
     global _pending
+    from . import local_preview
     if _pending is None:
         return None
+    if local_preview.active():
+        return 0.5
     obj, signature, due = _pending
     if time.monotonic() < due:
         return max(0.1, due - time.monotonic())
@@ -190,7 +254,8 @@ def _refresh_pending():
 
 def request_clip_refresh(context, obj):
     global _pending
-    if _discovery is not None:
+    from . import local_preview
+    if _discovery is not None or local_preview.active():
         return
     now = time.monotonic()
     previous_check = _last_checks.get(obj.as_pointer(), 0)
@@ -217,7 +282,7 @@ def request_clip_refresh(context, obj):
         bpy.app.timers.register(_refresh_pending, first_interval=0.4)
 
 
-def draw_clip_field(layout, form, field, obj):
+def draw_clip_field(layout, form, field, obj, type_path=None):
     """Keep the real StringProperty and write chosen names directly into it."""
     row = layout.row(align=True)
     row.prop(form, field)
@@ -227,6 +292,11 @@ def draw_clip_field(layout, form, field, obj):
     names = cached_clip_names(obj)
     current = getattr(form, field)
     row.menu('SKEIN_MT_exported_clips', text='', icon='DOWNARROW_HLT')
+    from . import local_preview
+    play = row.operator('wm.skein_preview_clip', text='', icon='PLAY')
+    local_preview.capture_target(play, obj, form, field)
+    if local_preview.active(obj):
+        row.operator('wm.skein_stop_clip_preview', text='', icon='PAUSE')
     from .authoring import selectable_clips
     if names is not None and current and current not in selectable_clips(names):
         for line in textwrap.wrap(f'Missing or ambiguous exported clip: {current}', width=55):
@@ -244,6 +314,8 @@ class SkeinChooseClip(bpy.types.Operator):
     target_pointer: bpy.props.StringProperty(options={'HIDDEN'}) # type: ignore
 
     def execute(self, context):
+        from . import local_preview
+        local_preview.stop()
         owner = bpy.data.objects.get(self.target_object)
         try:
             form = owner.path_resolve(self.target_path) if owner else None

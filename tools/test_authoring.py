@@ -37,6 +37,17 @@ def fixture():
 
 
 class AuthoringTests(unittest.TestCase):
+    def test_local_clip_playback_uses_declared_sibling_fields(self):
+        registry, description = fixture()
+        description['fields'][0]['playback'] = dict(loop_field='repeat', speed_field='rate')
+        authoring.validate_description(description, registry)
+        self.assertEqual(authoring.field_editor(description, 'demo::Motion', 'animation')['playback'], dict(loop_field='repeat',speed_field='rate'))
+        for config in ([1], dict(loop_field='rate'), dict(speed_field='repeat'), dict(speed_field='missing')):
+            invalid = copy.deepcopy(description)
+            invalid['fields'][0]['playback'] = config
+            with self.subTest(config=config), self.assertRaises(ValueError):
+                authoring.validate_description(invalid, registry)
+
     def test_single_field_wrappers_preserve_clip_traversal_in_nested_lists_and_options(self):
         registry, description = fixture()
         registry['Wrapped'] = dict(kind='TupleStruct', prefixItems=[reference('demo::Motion')])
