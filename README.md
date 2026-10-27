@@ -14,7 +14,7 @@ tldr:
 This branch adds generic List editing, project-described animation dropdowns,
 whole-component Copy/Paste/Reset, automatic registry/default caching, and export
 validation. It targets Bevy 0.19.0, Rust `bevy_skein` 0.6.0, and Blender 5.2+.
-The addon version is 0.1.22. The upstream compatibility table below describes
+The addon version is 0.1.23. The upstream compatibility table below describes
 upstream releases, not this fork's tested support.
 
 Remove the official addon, install this fork's ZIP with Blender's **Install from
@@ -22,6 +22,9 @@ Disk**, and enable it. Start a Bevy application with Skein BRP enabled. With
 Blender Online Access allowed, registry, Rust defaults and optional authoring
 metadata synchronize automatically. A saved `.blend` restores its caches offline.
 No Text Editor or manual JSON import is needed. Sync failures keep authored data.
+Runtime component metadata and required-field ordering do not force migration.
+Compatible refreshes can add supported empty List/None Option fields while
+verifying every existing value; other field removals or type changes still reject.
 
 Right-click a Skein component row to copy its whole value, paste into an existing
 component of the exact same type, or reset to its cached Rust Default. Paste and

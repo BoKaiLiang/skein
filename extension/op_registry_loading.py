@@ -118,17 +118,55 @@ def validate_registry_refresh(context, registry):
     visited = set()
     def shape(value):
         if isinstance(value, dict):
-            return {key: sorted(child) if key == 'reflectTypes' else shape(child) for key, child in value.items()
-                    if key not in ('description', 'shortPath')}
+            # Runtime metadata does not change the serialized value or its editor.
+            # Apply this only to schema nodes, never to authored field names.
+            is_schema = isinstance(value.get('kind'), str) and isinstance(value.get('typePath'), str)
+            return {key: sorted(child) if is_schema and key in ('reflectTypes', 'required') else shape(child)
+                    for key, child in value.items()
+                    if not (is_schema and key in ('description', 'shortPath', 'componentInfo'))}
         if isinstance(value, list):
             return [shape(child) for child in value]
         return value
+    def compatible(before, after):
+        if shape(before) == shape(after):
+            return True
+        if before.get('kind') != 'Struct' or after.get('kind') != 'Struct':
+            return False
+        old_fields = before.get('properties', {})
+        new_fields = after.get('properties', {})
+        added = new_fields.keys() - old_fields.keys()
+        if not added or not old_fields.keys() <= new_fields.keys():
+            return False
+        from .component_values import ensure_supported
+        for name in added:
+            path = next(_references(new_fields[name]), None)
+            child = registry.get(path, {})
+            if not (child.get('kind') == 'List' or
+                    (child.get('kind') == 'Enum' and child.get('modulePath') == 'core::option'
+                     and path.startswith('core::option::Option<'))):
+                return False
+            try:
+                ensure_supported(registry, path)
+            except ValueError:
+                return False
+        # Existing fields and requirements stay exact. Only empty List / None
+        # additions are safe without inventing a project-specific default.
+        reduced = dict(after, properties={key: new_fields[key] for key in old_fields})
+        if 'required' in after:
+            required = [key for key in after['required'] if key not in added]
+            if required or 'required' in before:
+                reduced['required'] = required
+            else:
+                reduced.pop('required')
+        return shape(before) == shape(reduced)
+
     while pending:
         type_path = pending.pop()
         if type_path in visited:
             continue
         visited.add(type_path)
-        if type_path not in previous or type_path not in registry or shape(previous[type_path]) != shape(registry[type_path]):
+        if (type_path not in previous or type_path not in registry
+                or not compatible(previous[type_path], registry[type_path])):
             raise ValueError(f'Cannot refresh used schema {type_path}; existing component data was kept. Migrate it with a compatible project version first.')
         pending.update(_references(previous[type_path]))
 

@@ -249,6 +249,61 @@ class AuthoringSyncTests(unittest.TestCase):
         self.assertEqual(sync.status()['state'], 'ready', sync.status())
         self.assertEqual(self.value(), dict(clip='Authored', speed=8.0))
 
+    def test_new_list_field_initializes_empty_and_preserves_old_fields(self):
+        self.main_thread = threading.get_ident()
+        self.original['VecString'] = dict(kind='List',typePath='VecString',shortPath='VecString',type='array',items={'type':{'$ref':'#/$defs/String'}})
+        self.original[TYPE]['properties']['actions'] = {'type':{'$ref':'#/$defs/VecString'}}
+        self.original[TYPE]['required'] = ['actions']
+        with patch('extension.connection.post', side_effect=self.post):
+            sync.request_sync()
+            self.pump()
+        self.assertEqual(sync.status()['state'], 'ready', sync.status())
+        self.assertEqual(self.value(), dict(clip='Authored', speed=8.0, actions=[]))
+
+    def test_new_option_field_initializes_none_and_preserves_old_fields(self):
+        self.main_thread = threading.get_ident()
+        option='core::option::Option<String>'
+        self.original[option] = dict(kind='Enum',typePath=option,shortPath='Option<String>',type='object',modulePath='core::option',oneOf=[dict(shortPath='None',typePath=option+'::None'),dict(kind='Tuple',typePath=option+'::Some',shortPath='Some',type='array',prefixItems=[{'type':{'$ref':'#/$defs/String'}}])])
+        self.original[TYPE]['properties']['optional'] = {'type':{'$ref':'#/$defs/'+option}}
+        with patch('extension.connection.post', side_effect=self.post):
+            sync.request_sync()
+            self.pump()
+        self.assertEqual(sync.status()['state'], 'ready', sync.status())
+        self.assertEqual(self.value(), dict(clip='Authored', speed=8.0, optional=None))
+
+    def test_runtime_component_metadata_is_not_an_authored_schema_change(self):
+        self.main_thread = threading.get_ident()
+        self.original[TYPE]['componentInfo'] = dict(isSendAndSync=True, mutable=True, storageType='Table')
+        before = self.value()
+        with patch('extension.connection.post', side_effect=self.post):
+            sync.request_sync()
+            self.pump()
+        self.assertEqual(sync.status()['state'], 'ready', sync.status())
+        self.assertEqual(self.value(), before)
+        self.assertEqual(self.read('skein-registry.json')[TYPE]['componentInfo'], self.original[TYPE]['componentInfo'])
+
+    def test_required_field_order_is_not_an_authored_schema_change(self):
+        before = copy.deepcopy(REGISTRY)
+        before[TYPE]['required'] = ['clip', 'speed']
+        process_registry(bpy.context, before)
+        self.write('skein-registry.json', before)
+        self.original[TYPE]['required'] = ['speed', 'clip']
+        self.main_thread = threading.get_ident()
+        with patch('extension.connection.post', side_effect=self.post):
+            sync.request_sync()
+            self.pump()
+        self.assertEqual(sync.status()['state'], 'ready', sync.status())
+        self.assertEqual(self.value(), dict(clip='Authored', speed=8.0))
+
+    def test_real_fields_named_like_metadata_still_require_migration(self):
+        from extension.op_registry_loading import validate_registry_refresh
+        for name in ('description', 'shortPath', 'componentInfo'):
+            changed = copy.deepcopy(REGISTRY)
+            changed[TYPE]['properties'][name] = {'type': {'$ref': '#/$defs/String'}}
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                validate_registry_refresh(bpy.context, changed)
+        self.assertEqual(self.value(), dict(clip='Authored', speed=8.0))
+
     def test_malformed_registry_is_rejected_without_touching_cache(self):
         from extension.op_registry_loading import validate_registry
         for mutation in (

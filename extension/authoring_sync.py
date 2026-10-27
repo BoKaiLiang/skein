@@ -101,6 +101,17 @@ def _snapshot(registry):
     return result
 
 
+def _preserves_values(before, after):
+    """Existing values stay exact; compatibility checks allow only safe additions."""
+    if isinstance(before, dict):
+        return isinstance(after, dict) and before.keys() <= after.keys() and all(
+            _preserves_values(value, after[key]) for key, value in before.items())
+    if isinstance(before, list):
+        return isinstance(after, list) and len(before) == len(after) and all(
+            _preserves_values(left, right) for left, right in zip(before, after))
+    return type(before) is type(after) and before == after
+
+
 def _rebuild(context, registry):
     """Keep raw data for unsupported types and verify supported values after rebind."""
     from .component_values import read_component
@@ -112,7 +123,7 @@ def _rebuild(context, registry):
             if [_raw(component) for component in owner.skein_two] != raw:
                 raise ValueError(f'Registry refresh changed stored component data on {owner.name}')
             for index, expected in values:
-                if read_component(owner.skein_two[index], registry) != expected:
+                if not _preserves_values(expected, read_component(owner.skein_two[index], registry)):
                     raise ValueError(f'Registry refresh changed component values on {owner.name}')
     except Exception:
         process_registry(context, previous)
