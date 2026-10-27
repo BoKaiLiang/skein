@@ -46,6 +46,9 @@ use tracing::{instrument, warn};
 ))]
 pub mod presets;
 
+/// Generic metadata for authoring reflected components.
+pub mod authoring;
+
 const EXTENSION: &str = "BEVY_skein";
 
 /// [`SkeinPlugin`] is the main plugin.
@@ -75,7 +78,8 @@ impl Default for SkeinPlugin {
 impl Plugin for SkeinPlugin {
     #[instrument(skip(self, app))]
     fn build(&self, app: &mut App) {
-        app.init_resource::<SkeinPresetRegistry>()
+        app.init_resource::<authoring::AuthoringRegistry>()
+            .init_resource::<SkeinPresetRegistry>()
             .add_observer(skein_processing);
 
         let type_registry = app
@@ -142,6 +146,21 @@ impl Plugin for SkeinPlugin {
     #[instrument(skip(self, app))]
     fn finish(&self, app: &mut App) {
         {
+            let authoring_id =
+                bevy_remote::RemoteMethodSystemId::Instant(
+                    app.world_mut().register_system(
+                        authoring::export_authoring,
+                    ),
+                );
+            if let Some(mut methods) = app
+                .world_mut()
+                .get_resource_mut::<bevy_remote::RemoteMethods>()
+            {
+                methods.insert(
+                    authoring::BRP_SKEIN_AUTHORING_METHOD,
+                    authoring_id,
+                );
+            }
             // add presets endpoint
             #[cfg(feature = "presets")]
             {
@@ -557,7 +576,7 @@ fn insert_components(
     for json_component in skein.iter() {
         // deserialize
         let reflect_deserializer =
-            ReflectDeserializer::new(&type_registry);
+            ReflectDeserializer::new(type_registry);
         let reflect_value = match reflect_deserializer
             .deserialize(json_component)
         {

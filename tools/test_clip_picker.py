@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import extension
 from extension import gltf_export_extension
-from extension.action_validation import CHARACTER_CONTROLLER
+from tools.test_action_validation import REGISTRY, DESCRIPTION, DATA
+COMPONENT = "demo::Avatar"
 
 
 class ClipPickerTests(unittest.TestCase):
@@ -18,27 +19,28 @@ class ClipPickerTests(unittest.TestCase):
     def setUpClass(cls):
         extension.register()
         bpy.context.preferences.addons.new().module = 'extension'
-        cls.data = {}
-        cls.reader = gltf_export_extension.get_object_controller_data
-        gltf_export_extension.get_object_controller_data = lambda obj: cls.data.get(obj.name)
-
-    @classmethod
-    def tearDownClass(cls):
-        gltf_export_extension.get_object_controller_data = cls.reader
+        from extension.op_registry_loading import process_registry
+        bpy.data.texts.new('skein-registry.json').write(json.dumps(REGISTRY))
+        bpy.data.texts.new('skein-authoring.json').write(json.dumps(DESCRIPTION))
+        process_registry(bpy.context, REGISTRY)
 
     def setUp(self):
         self.assertTrue(hasattr(extension, 'clip_picker'), 'Addon needs exported clip picker')
         self.picker = extension.clip_picker
         self.picker.clear_cache()
-        self.data.clear()
         bpy.ops.object.select_all(action='SELECT')
         bpy.ops.object.delete(use_global=False)
         for action in list(bpy.data.actions):
             bpy.data.actions.remove(action)
         bpy.ops.object.empty_add()
         self.root = bpy.context.object
-        self.root.name = 'Controller'
-        self.data[self.root.name] = {'actions': [dict(id='roll', clip='Missing', binding=None, looped=False, speed=1)]}
+        self.root.name = 'AssetRoot'
+        from extension.op_insert_component import insert_component_data
+        from extension.object_to_form import object_to_form
+        bpy.context.window_manager.selected_component = COMPONENT
+        insert_component_data(bpy.context, self.root)
+        data = {'motions': [dict(tag='first', clip_ref='Missing', rate=1.0)]}
+        object_to_form(self.root.skein_two[0], COMPONENT, data)
         self.mesh = self.animated('Hero', 'SourceAction', 'Exported Roll', self.root)
         self.other = self.animated('Other', 'WrongCharacter', 'Other Clip', None)
         bpy.context.view_layer.objects.active = self.root
@@ -74,7 +76,7 @@ class ClipPickerTests(unittest.TestCase):
             bpy.context.preferences.addons.new().module = 'extension'
         self.assertEqual(self.picker.refresh_clip_cache(bpy.context, self.root), ['Exported Roll'])
 
-    def test_actual_nla_names_filtered_to_exported_character(self):
+    def test_actual_nla_names_filtered_to_exported_hierarchy(self):
         names = self.picker.refresh_clip_cache(bpy.context, self.root)
         self.assertEqual(names, ['Exported Roll'])
         self.assertEqual(self.picker.cached_clip_names(self.root), names)
@@ -100,7 +102,6 @@ class ClipPickerTests(unittest.TestCase):
         self.assertEqual(self.picker.refresh_clip_cache(bpy.context, self.root), [])
 
     def test_edit_mode_discovery_defers_without_switching_mode(self):
-        self.data[self.mesh.name] = self.data[self.root.name]
         bpy.ops.object.select_all(action='DESELECT')
         self.mesh.select_set(True)
         bpy.context.view_layer.objects.active = self.mesh
@@ -125,7 +126,6 @@ class ClipPickerTests(unittest.TestCase):
     def test_pose_mode_entered_after_scheduling_defers_without_switching_mode(self):
         bpy.ops.object.armature_add()
         armature = bpy.context.object
-        self.data[armature.name] = {'actions': []}
         self.picker.request_clip_refresh(bpy.context, armature)
         self.picker._pending = (armature, None, 0)
         bpy.ops.object.mode_set(mode='POSE')
@@ -250,15 +250,26 @@ class ClipPickerTests(unittest.TestCase):
         self.assertEqual(bpy.ops.wm.skein_refresh_clips(), {'FINISHED'})
         self.assertIsNone(self.picker.cached_clip_error(self.root))
         self.assertEqual(self.picker.cached_clip_names(self.root), ['Exported Roll'])
-        self.assertEqual(self.data[self.root.name]['actions'][0]['clip'], 'Missing')
+        from extension.form_to_object import get_data_from_active_editor
+        self.assertEqual(get_data_from_active_editor(self.root.skein_two[0], COMPONENT)['motions'][0]['clip_ref'], 'Missing')
         self.assertEqual(bpy.context.scene.frame_current, 7)
         self.assertEqual(bpy.context.scene.frame_subframe, 0.25)
         self.assertEqual(self.mesh.animation_data.action, action)
         self.assertEqual(self.mesh.animation_data.action_slot, slot)
         self.assertEqual(self.picker.clip_cache_signature(bpy.context, self.root), before_signature)
 
+    def test_stale_popup_target_and_animation_changes_cancel_without_writing(self):
+        form = getattr(self.root.skein_two[0], COMPONENT).motions.entries[0].value
+        self.picker.refresh_clip_cache(bpy.context, self.root)
+        options = dict(field='clip_ref', clip='Exported Roll', target_object=self.root.name,
+                       target_path=form.path_from_id(), target_pointer=str(form.as_pointer()))
+        self.assertEqual(bpy.ops.wm.skein_choose_clip(**dict(options, target_pointer='0')), {'CANCELLED'})
+        self.assertEqual(form.clip_ref, 'Missing')
+        self.mesh.animation_data.nla_tracks[0].name = 'Changed After Menu Opened'
+        self.assertEqual(bpy.ops.wm.skein_choose_clip(**options), {'CANCELLED'})
+        self.assertEqual(form.clip_ref, 'Missing')
+
     def test_string_choice_and_missing_value_survive_reopen(self):
-        from tools.test_lists import REGISTRY, DATA
         from extension.op_registry_loading import process_registry
         from extension.object_to_form import object_to_form
         from extension.form_to_object import get_data_from_active_editor
@@ -266,15 +277,14 @@ class ClipPickerTests(unittest.TestCase):
         bpy.data.texts.new('skein-registry.json').write(json.dumps(registry))
         process_registry(bpy.context, registry)
         bpy.context.view_layer.objects.active = self.root
-        bpy.context.window_manager.selected_component = CHARACTER_CONTROLLER
-        bpy.ops.object.insert_component()
         container = self.root.skein_two[0]
-        object_to_form(container, CHARACTER_CONTROLLER, DATA)
-        form = getattr(container, CHARACTER_CONTROLLER).actions.entries[0].value
+        object_to_form(container, COMPONENT, DATA)
+        form = getattr(container, COMPONENT).motions.entries[0].value
+        self.picker.refresh_clip_cache(bpy.context, self.root)
         with bpy.context.temp_override(skein_clip_target=form):
-            self.assertEqual(bpy.ops.wm.skein_choose_clip(field='clip', clip='Exported Roll',
-                target_object=self.root.name, target_path=form.path_from_id()), {'FINISHED'})
-        self.assertEqual(form.clip, 'Exported Roll')
+            self.assertEqual(bpy.ops.wm.skein_choose_clip(field='clip_ref', clip='Exported Roll',
+                target_object=self.root.name, target_path=form.path_from_id(), target_pointer=str(form.as_pointer())), {'FINISHED'})
+        self.assertEqual(form.clip_ref, 'Exported Roll')
         # Popup draw and execution have distinct context lifetimes.
         from types import SimpleNamespace
         self.picker.refresh_clip_cache(bpy.context, self.root)
@@ -284,22 +294,22 @@ class ClipPickerTests(unittest.TestCase):
                 choice = SimpleNamespace()
                 choices.append(choice)
                 return choice
-        menu_context = SimpleNamespace(skein_clip_object=self.root, skein_clip_target=form, skein_clip_field='clip')
+        menu_context = SimpleNamespace(skein_clip_object=self.root, skein_clip_target=form, skein_clip_field='clip_ref')
         self.picker.SkeinExportedClips.draw(SimpleNamespace(layout=PopupLayout()), menu_context)
         choice = choices[0]
         self.assertTrue(hasattr(choice, 'target_path'), 'Popup must capture a target that survives menu closure')
         self.assertEqual(self.root.path_resolve(choice.target_path), form)
-        form.clip = 'Before Popup Choice'
+        form.clip_ref = 'Before Popup Choice'
         self.assertEqual(bpy.ops.wm.skein_choose_clip(field=choice.field, clip=choice.clip,
-            target_object=choice.target_object, target_path=choice.target_path), {'FINISHED'})
-        self.assertEqual(form.clip, 'Exported Roll')
-        self.assertEqual(bpy.ops.wm.skein_choose_clip(field='clip', clip='Wrong',
+            target_object=choice.target_object, target_path=choice.target_path, target_pointer=choice.target_pointer), {'FINISHED'})
+        self.assertEqual(form.clip_ref, 'Exported Roll')
+        self.assertEqual(bpy.ops.wm.skein_choose_clip(field='clip_ref', clip='Wrong',
             target_object=self.root.name, target_path='missing_form'), {'CANCELLED'})
-        self.assertEqual(form.clip, 'Exported Roll')
-        form.clip = 'Missing Saved Clip' 
+        self.assertEqual(form.clip_ref, 'Exported Roll')
+        form.clip_ref = 'Missing Saved Clip'
         names = self.picker.refresh_clip_cache(bpy.context, self.root)
-        self.assertEqual(form.clip, 'Missing Saved Clip')
-        self.assertNotIn(form.clip, names)
+        self.assertEqual(form.clip_ref, 'Missing Saved Clip')
+        self.assertNotIn(form.clip_ref, names)
         from tools.test_lists import RecordingLayout
         from extension.skein_panel import render_two
         class ClipLayout(RecordingLayout):
@@ -311,17 +321,17 @@ class ClipPickerTests(unittest.TestCase):
             def menu(self, name, **kwargs):
                 self.operators.append(name)
         layout = ClipLayout()
-        render_two(layout, container, CHARACTER_CONTROLLER, clip_object=self.root)
-        self.assertEqual(layout.operators.count('SKEIN_MT_exported_clips'), 2)
-        self.assertIn('Missing exported clip: Missing Saved Clip', layout.labels)
-        self.assertEqual(form.clip, 'Missing Saved Clip')
+        render_two(layout, container, COMPONENT, clip_object=self.root)
+        self.assertEqual(layout.operators.count('SKEIN_MT_exported_clips'), 1)
+        self.assertIn('Missing or ambiguous exported clip: Missing Saved Clip', layout.labels)
+        self.assertEqual(form.clip_ref, 'Missing Saved Clip')
         root_name = self.root.name
         with tempfile.TemporaryDirectory() as temp:
             path = str(Path(temp) / 'picker.blend')
             bpy.ops.wm.save_as_mainfile(filepath=path)
             bpy.ops.wm.open_mainfile(filepath=path)
-            data = get_data_from_active_editor(bpy.data.objects[root_name].skein_two[0], CHARACTER_CONTROLLER)
-            self.assertEqual(data['actions'][0]['clip'], 'Missing Saved Clip')
+            data = get_data_from_active_editor(bpy.data.objects[root_name].skein_two[0], COMPONENT)
+            self.assertEqual(data['motions'][0]['clip_ref'], 'Missing Saved Clip')
 
 
 if __name__ == '__main__':

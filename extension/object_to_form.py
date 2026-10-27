@@ -6,6 +6,13 @@ def object_to_form(context, context_key, data):
     context_key is the type_path
     data is the component data
     """
+    # Scalar roots and scalar enum payloads have no nested PropertyGroup.
+    # Assign the actual RNA property even when it has no stored ID value yet.
+    property = getattr(context, "__annotations__", {}).get(context_key)
+    if hasattr(property, "function") and property.function.__name__ != "PointerProperty":
+        setattr(context, context_key, data)
+        return
+
     if context_key not in context:
         return
     
@@ -67,12 +74,8 @@ def object_to_form(context, context_key, data):
             (enum_variant, enum_data), *rest = data.items()
             # set the skein_enum_index
             setattr(obj, "skein_enum_index", enum_variant)
-            # set the key's value, if its a dict
+            # Recurse through the variant; primitive payloads assign their RNA property.
             object_to_form(obj, enum_variant, enum_data)
-            # else:
-            #     print("scalar?")
-            #     # setattr primitive value
-            #     setattr(obj, enum_variant, enum_data)
         # if we handled an enum, return since there's 
         # no further processing to do.
         return

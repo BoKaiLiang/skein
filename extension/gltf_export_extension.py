@@ -1,12 +1,4 @@
-import inspect
 import bpy
-
-from .player_selection import get_source_selection_record, validate_player_selection
-from .property_groups import hash_over_64
-from .form_to_object import get_data_from_active_editor
-from .action_validation import (
-    get_object_controller_data, validate_character_controller, format_diagnostics,
-)
 
 # glTF extensions are named following a convention with known prefixes.
 # See: https://github.com/KhronosGroup/glTF/tree/main/extensions#about-gltf-extensions
@@ -88,342 +80,169 @@ def draw_export(context, layout):
     #     body.prop(props, 'float_property', text="Some float value")
 
 
-# Note: the class must have this exact name
+# Blender discovers this exact class name.
 class glTF2ExportUserExtension:
-    # Blender otherwise logs extension errors and continues writing a broken GLB.
     is_critical = True
 
     def __init__(self):
-        # We need to wait until we create the gltf2UserExtension to import the gltf2 modules
-        # Otherwise, it may fail because the gltf2 may not be loaded yet
-        from io_scene_gltf2.io.com.gltf2_io_extensions import Extension # type: ignore
+        from io_scene_gltf2.io.com.gltf2_io_extensions import Extension
+        from .clip_picker import capture_state
         self.Extension = Extension
         self.properties = bpy.context.scene.skein_extension_properties
-        self.character_controllers = {}
-        self.player_selection_sources = {}
-        self.original_frame = bpy.context.scene.frame_current
-    
+        self.nodes = {}
+        self.sources = {}
+        self.source_errors = {}
+        self.restore_state = capture_state(bpy.context)
+
     def passthrough_extension_data(self, passthrough_extensions, gltf2_plan, export_settings):
         passthrough_extensions.append(glTF_extension_name)
 
-    def gather_node_hook(self, gltf2_object, blender_object, export_settings):
-        # Note: If you are using Collection Exporters, you may want to restrict the export for some collections
-        # You can access the collection like this: export_settings['gltf_collection']
-        # So you can check if you want to use this hook for this collection or not, using
-        # if export_settings['gltf_collection'] != "Coll":
-        #     return
-
-        # self.report() doesn't seem available here because we aren't
-        # in "Blender" we're in the "gltf2 extension"
+    def gather_node_hook(self, node, source, settings):
         from .clip_picker import is_discovery
-        if self.properties.enabled or is_discovery(export_settings):
-            data = get_object_controller_data(blender_object)
-            if data is not None:
-                self.character_controllers[id(gltf2_object)] = (gltf2_object, blender_object.name, data)
-            try:
-                # if this is a node with a light and the KHR_lights_punctual extension is on
-                # then handle the light skein data
-                if blender_object.data.type in LIGHTS and "KHR_lights_punctual" in gltf2_object.extensions:
-                    self.gather_skein_two(
-                        blender_object.data,
-                        gltf2_object.extensions["KHR_lights_punctual"].extension["light"].extension
-                    )
-            except Exception as e:
-                pass
-
-            # gather the main node skein data
-            self.gather_skein_two(blender_object, gltf2_object)
-            
-    def gather_mesh_hook(self, gltf2_mesh, blender_mesh, blender_object, vertex_groups, modifiers, materials, export_settings):
-        if self.properties.enabled:
-            self.gather_skein_two(blender_mesh, gltf2_mesh)
-
-    def gather_material_hook(self, gltf2_material, blender_material, export_settings):
-        if self.properties.enabled:
-            self.gather_skein_two(blender_material, gltf2_material)
-    def gather_camera_hook(self, gltf2_camera, blender_camera, export_settings):
-        if self.properties.enabled:
-            self.gather_skein_two(blender_camera, gltf2_camera)
-    def gather_joint_hook(self, gltf2_node, blender_bone, export_settings):
-        # blender_bone seems to be a PoseBone
-        if self.properties.enabled:
-            # blender_bone.bone is the way the gltf extension grabs the extras
-            # https://github.com/KhronosGroup/glTF-Blender-IO/blob/d97e93200cff331b7d58bb8347237740fd7ccd89/addons/io_scene_gltf2/blender/exp/joints.py#L119
-            self.gather_skein_two(blender_bone.bone, gltf2_node)
-        pass
-    def gather_gltf_extensions_hook(self, gltf2_plan, export_settings):
-        pass
-
-    def gather_gltf_hook(self, active_scene_idx, scenes, animations, export_settings):
-        """Validate only exported characters, after animation naming/merging."""
-        from .clip_picker import is_discovery
-        if not self.properties.enabled and not is_discovery(export_settings):
+        self.nodes[id(node)] = (node, source.name)
+        if not self.properties.enabled or is_discovery(settings):
             return
-        exported_nodes = set()
+        if getattr(source.data, 'type', None) in LIGHTS and 'KHR_lights_punctual' in (node.extensions or {}):
+            self.gather_skein_two(source.data, node.extensions['KHR_lights_punctual'].extension['light'].extension)
+        self.gather_skein_two(source, node)
 
-        def visit(node, result):
-            if id(node) in result:
+    def gather_mesh_hook(self, sink, source, blender_object, vertex_groups, modifiers, materials, settings):
+        self.gather_if_enabled(source, sink, settings)
+
+    def gather_material_hook(self, sink, source, settings):
+        self.gather_if_enabled(source, sink, settings)
+
+    def gather_camera_hook(self, sink, source, settings):
+        self.gather_if_enabled(source, sink, settings)
+
+    def gather_joint_hook(self, sink, source, settings):
+        self.gather_if_enabled(source.bone, sink, settings)
+
+    def gather_scene_hook(self, sink, source, settings):
+        self.gather_if_enabled(source, sink, settings)
+
+    def gather_if_enabled(self, source, sink, settings):
+        from .clip_picker import is_discovery
+        if self.properties.enabled and not is_discovery(settings):
+            self.gather_skein_two(source, sink)
+
+    def gather_gltf_hook(self, active_scene_idx, scenes, animations, settings):
+        from .clip_picker import is_discovery, record_discovery
+        from .validation import current_registry, validate_export, export_description, format_diagnostic
+        reachable = set()
+        def visit(value):
+            if id(value) in reachable:
                 return
-            result.add(id(node))
+            reachable.add(id(value))
+            if isinstance(value, dict):
+                children = value.values()
+            elif isinstance(value, (list, tuple)):
+                children = value
+            else:
+                children = vars(value).values() if hasattr(value, '__dict__') else ()
+            for child in children:
+                visit(child)
+        visit(scenes)
+        clips = {}
+        def descendants(node, found):
+            if id(node) in found:
+                return
+            found.add(id(node))
             for child in node.children or ():
-                visit(child, result)
-
-        for scene in scenes:
-            for node in scene.nodes or ():
-                visit(node, exported_nodes)
-        from .clip_picker import record_discovery
+                descendants(child, found)
+        for node_id, (node, name) in self.nodes.items():
+            if node_id not in reachable:
+                continue
+            hierarchy = set()
+            descendants(node, hierarchy)
+            own = {animation.name for animation in animations if any(
+                id(channel.target.node) in hierarchy for channel in animation.channels or ())}
+            # Duplicate names anywhere in the final GLB remain ambiguous.
+            clips[name] = [animation.name for animation in animations if animation.name in own]
+            if is_discovery(settings):
+                record_discovery(name, clips[name])
+        if is_discovery(settings) or not self.properties.enabled:
+            return
+        local_failures = [message for (sink_id, _source_id), message in self.source_errors.items()
+                          if sink_id in reachable]
+        if local_failures:
+            self.abort(settings, 'Skein export validation failed:\n' + '\n'.join(local_failures))
+        records = [record for sink_id, record in self.sources.values() if sink_id in reachable]
+        try:
+            registry = current_registry()
+            description, diagnostics = export_description(registry)
+            if not any(item['severity'] == 'ERROR' for item in diagnostics):
+                diagnostics.extend(validate_export(records, registry, description, clips))
+        except (ValueError, TypeError, KeyError, AttributeError, RuntimeError) as error:
+            self.abort(settings, f'Skein export metadata validation failed: {error}')
         failures = []
-        if not is_discovery(export_settings):
-            # Follow final glTF references so filtered objects and unused data do not count.
-            exported_sinks = set()
-            def visit_data(value):
-                if id(value) in exported_sinks:
-                    return
-                exported_sinks.add(id(value))
-                if isinstance(value, dict):
-                    children = value.values()
-                elif isinstance(value, (list, tuple)):
-                    children = value
-                else:
-                    children = vars(value).values() if hasattr(value, '__dict__') else ()
-                for child in children:
-                    visit_data(child)
-            visit_data(scenes)
-            records = [record for sink_id, record in self.player_selection_sources.values()
-                       if sink_id in exported_sinks]
-            for diagnostic in validate_player_selection(records):
-                message = f'{diagnostic["field"]}: {diagnostic["message"]}'
-                if diagnostic['severity'] == 'ERROR':
-                    failures.append(message)
-                else:
-                    print('Skein WARNING: ' + message)
-        for node_id, (node, name, data) in self.character_controllers.items():
-            if node_id not in exported_nodes:
-                continue
-            descendants = set()
-            visit(node, descendants)
-            own_names = {animation.name for animation in animations
-                         if any(id(channel.target.node) in descendants for channel in animation.channels or ())}
-            # Duplicate names anywhere in the GLB are ambiguous in Bevy's named animation map.
-            names = [animation.name for animation in animations if animation.name in own_names]
-            if is_discovery(export_settings):
-                record_discovery(name, names)
-                continue
-            diagnostics = validate_character_controller(data, names)
-            if diagnostics:
-                failures.append(format_diagnostics(name, diagnostics))
+        for item in diagnostics:
+            message = format_diagnostic(item)
+            if item['severity'] == 'ERROR':
+                failures.append(message)
+            else:
+                print('Skein WARNING: ' + message)
+                settings['log'].warning('Skein: ' + message, popup=True)
         if failures:
-            message = 'Skein character validation failed:\n' + '\n'.join(failures)
-            print(message)
-            # Older exporters swallow hook errors. Their callbacks still run before
-            # writing, so keep the same validation guarantee when is_critical is absent.
-            def abort_export(_settings):
-                # The upstream save() restoration is skipped when validation aborts.
-                bpy.context.scene.frame_set(self.original_frame)
-                if bpy.context.window:
-                    bpy.context.window.cursor_set('DEFAULT')
-                raise RuntimeError(message)
-            export_settings['post_export_callbacks'].append(abort_export)
-            abort_export(export_settings)
-    def gather_scene_hook(self, gltf2_scene, blender_scene, export_settings):
-        if self.properties.enabled:
-            self.gather_skein_two(blender_scene, gltf2_scene)
-        pass
-    # 
-    # this commented code is some code meant to aid in debugging any
-    # arbitrary feature through the export process
-    # 
-    # # def pre_export_hook(self, export_settings):
-    # #     print("debug: ")
-    # # def post_export_hook(self, export_settings):
-    # #     print("debug: ")
-    # def gather_animation_channel_hook(self, gltf2_animation_channel, channel, blender_object, bone, action_name, node_channel_is_animated, export_settings):
-    #     print("debug: gather_animation_channel_hook")
-    # def gather_animation_channel_target_hook(self, gltf2_animation_channel_target, channels, blender_object, bake_bone, bake_channel, export_settings):
-    #     print("debug: gather_animation_channel_target_hook")
-    # def gather_animation_sampler_hook(self, gltf2_sampler, blender_object, bone, action_name, node_channel_is_animated, export_settings):
-    #     print("debug: gather_animation_sampler_hook")
-    # def gather_asset_hook(self, gltf2_asset, export_settings):
-    #     print("debug: gather_asset_hook")
-    # # def gather_camera_hook(self, gltf2_camera, blender_camera, export_settings):
-    # #     print("debug: ")
-    # # def gather_gltf_extensions_hook(self, gltf2_plan, export_settings):
-    # #     print("debug: ")
-    # def gather_image_hook(self, gltf2_image, mapping, blender_shader_sockets, export_settings):
-    #     print("debug: gather_image_hook")
-    # # def gather_joint_hook(self, gltf2_node, blender_bone, export_settings):
-    # #     print("debug: gather_joint_hook")
-    # # def gather_material_hook(self, gltf2_material, blender_material, export_settings):
-    # #     print("debug: ")
-    # # def gather_material_pbr_metallic_roughness_hook(self, gltf2_material, blender_material, orm_texture, export_settings):
-    # #     print("debug: ")
-    # # def gather_material_unlit_hook(self, gltf2_material, blender_material, export_settings):
-    # #     print("debug: ")
-    # # def gather_mesh_hook(self, gltf2_mesh, blender_mesh, blender_object, vertex_groups, modifiers, materials, export_settings):
-    # #     print("debug: ")
-    # # def gather_node_hook(self, gltf2_node, blender_object, export_settings):
-    # #     print("debug: ")
-    # def gather_node_name_hook(self, gltf_name, blender_object, export_settings):
-    #     print("debug: gather_node_name_hook")
-    # def gather_sampler_hook(self, gltf2_sampler, blender_shader_node, export_settings):
-    #     print("debug: gather_sampler_hook")
-    # # def gather_scene_hook(self, gltf2_scene, blender_scene, export_settings):
-    # #     print("debug: ")
-    # # def gather_skin_hook(self, gltf2_skin, blender_object, export_settings):
-    # #     print("debug: ")
-    # def gather_texture_hook(self, gltf2_texture, blender_shader_sockets, export_settings):
-    #     print("debug: gather_texture_hook")
-    # def gather_texture_info_hook(self, gltf2_texture_info, blender_shader_sockets, export_settings):
-    #     print("debug: gather_texture_info_hook")
-    # def merge_animation_extensions_hook(self, gltf2_animation_source, gltf2_animation_destination, export_settings):
-    #     print("debug: merge_animation_extensions_hook")
-    # def vtree_before_filter_hook(self, vtree, export_settings):
-    #     print("debug: vtree_before_filter_hook")
-    # def vtree_after_filter_hook(self, vtree, export_settings):
-    #     print("debug: vtree_after_filter_hook")
-    # def pre_gather_animation_hook(self, gltf2_channels, blender_action, slot_identifier, blender_object, export_settings):
-    #     print("debug: pre_gather_animation_hook")
-    # def gather_actions_hook(self, blender_object, actions, export_settings): # params = ActionsData
-    #     print("debug: gather_actions_hook")
-    # def gather_tracks_hook(self, blender_object, tracks, export_settings): # params = TracksData, blender_tracks_names, track_on_type:
-    #     print("debug: gather_tracks_hook")
-    # def pre_gather_actions_hook(self, blender_object, export_settings): # For action mode
-    #     print("debug: pre_gather_actions_hook")
-    # def pre_gather_tracks_hook(self, blender_object, export_settings): # For track mode
-    #     print("debug: pre_gather_tracks_hook")
-    # def pre_animation_switch_hook(self, blender_object, blender_action, slot, track_name, on_type, export_settings): # For action mode:
-    #     print("debug: pre_animation_switch_hook")
-    # def post_animation_switch_hook(self, blender_object, blender_action, slot, track_name, on_type, export_settings):  # For action mode:
-    #     print("debug: post_animation_switch_hook")
-    # def pre_animation_track_switch_hook(self, blender_object, tracks, track_name, on_type, export_settings): # For track mode:
-    #     print("debug: pre_animation_track_switch_hook")
-    # def post_animation_track_switch_hook(self, blender_object, tracks, track_name, on_type, export_settings):  # For track mode:
-    #     print("debug: post_animation_track_switch_hook")
-    # def animation_switch_loop_hook(self, blender_object, post, export_settings): # post = False before loop, True after loop # for action mode:
-    #     print("debug: animation_switch_loop_hook")
-    # def animation_track_switch_loop_hook(self, blender_object, post, export_settings): # post = False before loop, True after loop # for track mode:
-    #     print("debug: animation_track_switch_loop_hook")
-    # def animation_gather_fcurve(self, blender_object, blender_action, export_settings):
-    #     print("debug: animation_gather_fcurve")
-    # def animation_channels_object_sampled(self, gltf2_channels, blender_object, blender_action, slot_identifier, cache_key, export_settings):
-    #     print("debug: animation_channels_object_sampled")
-    # def animation_gather_object_channel(self, blender_object, blender_action_name, export_settings):
-    #     print("debug: animation_gather_object_channel")
-    # def animation_gather_object_sampler(self, blender_object, action_name, export_settings):
-    #     print("debug: animation_gather_object_sampler")
-    # def animation_channels_sk_sampled(self, gltf2_channels, blender_object, blender_action, slot_identifier, cache_key, export_settings):
-    #     print("debug: animation_channels_sk_sampled")
-    # def animation_action_sk_sampled_target(self, blender_object, export_settings):
-    #     print("debug: animation_action_sk_sampled_target")
-    # def animation_gather_sk_channels(self, blender_object, blender_action_name, export_settings):
-    #     print("debug: animation_gather_sk_channels")
-    # def animation_gather_sk_channel(self, blender_object, blender_action_name, export_settings):
-    #     print("debug: animation_gather_sk_channel")
-    # def animation_gather_fcurve_channel_target(self, blender_object, bone_name, export_settings):
-    #     print("debug: animation_gather_fcurve_channel_target")
-    # def animation_gather_fcurve_channel_sampler(self, blender_object, bone_name, export_settings):
-    #     print("debug: animation_gather_fcurve_channel_sampler")
-    # def animation_gather_fcurve_channel(self, blender_object, bone_name, channel_group, export_settings):
-    #     print("debug: animation_gather_fcurve_channel")
-    # def gather_gltf_hook(self, active_scene_idx, scenes, animations, export_settings):
-    #     print("debug: gather_gltf_hook")
-    # def gather_gltf_encoded_hook(self, gltf_format, sort_order, export_settings):
-    #     print("debug: gather_gltf_encoded_hook")
-    # def gather_tree_filter_tag_hook(self, tree, export_settings):
-    #     print("debug: gather_tree_filter_tag_hook")
-    # def animation_channels_armature_sampled(self, gltf2_channels, blender_object, blender_action, slot_identifier, cache_key, export_settings):
-    #     print("debug: animation_channels_armature_sampled")
-    # def gather_animation_bone_sampled_channel_target_hook(self, blender_object, bone, channel, export_settings):
-    #     print("debug: gather_animation_bone_sampled_channel_target_hook")
-    # def gather_animation_object_sampled_channel_target_hook(self, blender_object, channel):
-    #     print("debug: gather_animation_object_sampled_channel_target_hook")
-    # def gather_attribute_keep(self, keep_attribute, export_settings):
-    #     print("debug: gather_attribute_keep")
-    # def gather_attribute_change(self, attribute, data, is_normalized_byte_color, export_settings):
-    #     print("debug: gather_attribute_change")
-    # def gather_attributes_change(self, attributes, export_settings):
-    #     print("debug: gather_attributes_change")
-    # def gather_gltf_additional_textures_hook(self, json, additioan_json_textures, export_settings):
-    #     print("debug: gather_gltf_additional_textures_hook")
-    # def gather_node_mesh_hook(self, option, blender_object, export_settings):
-    #     print("debug: gather_node_mesh_hook")
-    # def extra_animation_manage(self, extra_samplers, obj_uuid, blender_object, blender_action, gltf_channels, export_settings):
-    #     print("debug: extra_animation_manage")
-    # def animation_action_hook(self, gltf2_animation, blender_object, blender_action_data, export_settings):
-    #     print("debug: animation_action_hook")
+            self.abort(settings, 'Skein export validation failed:\n' + '\n'.join(failures))
+
+    def abort(self, settings, message):
+        def abort_export(_settings):
+            self.restore_state()
+            raise RuntimeError(message)
+        # Older exporters swallow hook exceptions, but callbacks run before writing.
+        settings['post_export_callbacks'].append(abort_export)
+        abort_export(settings)
+
     def gather_skein_two(self, source, sink):
-        record = get_source_selection_record(source)
-        if record[1] or record[2]:
-            self.player_selection_sources[(id(sink), source.as_pointer())] = (id(sink), record)
-        if "skein_two" in dir(source):
-            objs = []
-            skein_property_groups = bpy.context.window_manager.skein_property_groups
-            for component in source.skein_two:
-                obj = {}
-                type_path = component["selected_type_path"]
-
-                if inspect.isclass(skein_property_groups[type_path]):
-                    try:
-                        match skein_property_groups[type_path].force_default:
-                            case "object":
-                                obj[type_path] = {}
-                            case "list":
-                                obj[type_path] = []
-                        objs.append(obj)
-                    except AttributeError:
-                        value = get_data_from_active_editor(
-                            component,
-                            hash_over_64(type_path),
-                        )
-                        obj[type_path] = value
-                        objs.append(obj)
-                else:
-                    # if the component is a tuple struct, etc
-                    # retrieve the value directly instead of
-                    # recursing
-                    obj[type_path] = getattr(component, hash_over_64(type_path))
-                    objs.append(obj)
-
-            # storing data on glTF extras is the original way Skein worked
-            # and for the time being is easy to keep supporting, so we will.
-            # but we can also enable turning extras off.
-            #
-            # for most items, extras is a `.` access
-            # for gltf KHR lights extension (and likely other extensions?) extras is a `[]` access
-            if self.properties.extras:
-                try:
-                    sink.extras
-                    # python allows checking for empty arrays by "if array"
-                    if objs:
-                        if sink.extras is None:
-                            sink.extras = {}
-                        sink.extras["skein"] = objs
-                except:
-                    # python allows checking for empty arrays by "if array"
-                    if objs:
-                        if sink["extras"] is None:
-                            sink["extras"] = {}
-                        sink["extras"]["skein"] = objs
-            # if extension-based exporting is enabled, set the appropriate
-            # extensions data.
-            if self.properties.extensions and objs:
-                if sink.extensions is None and objs:
+        from .validation import current_registry
+        from .component_values import read_component, ERRORS
+        if not (self.properties.extras or self.properties.extensions):
+            return
+        components = []
+        try:
+            registry = current_registry()
+            for component in getattr(source, 'skein_two', ()):
+                components.append({component.selected_type_path: read_component(component, registry)})
+        except ERRORS as error:
+            # Gathering can visit data later filtered from the final scenes.
+            self.source_errors[(id(sink), source.as_pointer())] = f'{source.name}: invalid reflected component: {error}'
+            return
+        if not components:
+            return
+        kind = source.bl_rna.identifier
+        if isinstance(source, bpy.types.Light):
+            kind = 'Light'
+        record = dict(name=source.name, kind=kind, components=components)
+        self.sources[(id(sink), source.as_pointer())] = (id(sink), record)
+        if self.properties.extras:
+            if isinstance(sink, dict):
+                sink.setdefault('extras', {})
+                if sink['extras'] is None:
+                    sink['extras'] = {}
+                sink['extras']['skein'] = components
+            else:
+                if sink.extras is None:
+                    sink.extras = {}
+                sink.extras['skein'] = components
+        if self.properties.extensions:
+            if isinstance(sink, dict):
+                extensions = sink.setdefault('extensions', {})
+            else:
+                if sink.extensions is None:
                     sink.extensions = {}
-                sink.extensions[glTF_extension_name] = self.Extension(
-                    name=glTF_extension_name,
-                    extension={"components": objs},
-                    required=extension_is_required
-                )
+                extensions = sink.extensions
+            extensions[glTF_extension_name] = self.Extension(
+                name=glTF_extension_name, extension={'components': components}, required=extension_is_required)
+
 
 def glTF2_pre_export_callback(export_settings):
-    print("skein::glTF2_pre_export_callback")
-
-def glTF2_post_export_callback(export_settings):
-    print("skein::glTF2_post_export_callback")
-
-def pre_export_hook(export_settings):
-    print("skein::pre_export_hook")
     pass
 
 
+def glTF2_post_export_callback(export_settings):
+    pass
 
+
+def pre_export_hook(export_settings):
+    pass

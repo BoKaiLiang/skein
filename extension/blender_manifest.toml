@@ -3,8 +3,8 @@ schema_version = "1.0.0"
 # Example of manifest file for a Blender extension
 # Change the values according to your extension
 id = "bevy_skein"
-version = "0.1.21"
-name = "Bevy Skein (ARForge fork)"
+version = "0.1.22"
+name = "Bevy Skein (Lists and component values)"
 tagline = "Apply Bevy Components in Blender"
 maintainer = "Chris Biscardi <chris@christopherbiscardi.com>"
 # Supported types: "add-on", "theme"
@@ -60,9 +60,9 @@ license = ["SPDX:MIT", "SPDX:Apache-2.0"]
 # # For longer explanations use the documentation or detail page.
 #
 [permissions]
-network = "Connect to Bevy for registry and ARForge animation previews"
+network = "Connect to Bevy for types, defaults, validation and previews"
 files = "Export GLTF to disk/import Bevy type registry"
-clipboard = "Copy and paste ARForge CharacterController settings"
+clipboard = "Copy and paste reflected component values"
 
 # # Optional: advanced build settings.
 # # https://docs.blender.org/manual/en/dev/advanced/extensions/command_line_arguments.html#command-line-args-extension-build

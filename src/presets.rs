@@ -46,7 +46,7 @@ pub fn export_presets(
                 serde_json::to_value(&reflect_serializer)
             else {
                 trace!(?preset_name, ?reflected, "unable to serialize for presets endpoint");
-    
+
                 return None;
             };
             Some((preset_name.to_string(), output[type_path].clone()))

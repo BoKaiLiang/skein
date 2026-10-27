@@ -4,6 +4,12 @@ def get_data_from_active_editor(context, context_key):
     The initial context is typically the ComponentContainer and the 
     typical context_key is the type_path of the Component
     """
+    # Root Value/string-enum/single-field tuple components are scalar RNA
+    # properties rather than PropertyGroups, just like primitive struct fields.
+    property = getattr(context, "__annotations__", {}).get(context_key)
+    if hasattr(property, "function") and property.function.__name__ != "PointerProperty":
+        return getattr(context, context_key)
+
     if context_key not in context:
         # Older .blend files have no storage for list fields added by a new schema.
         value = getattr(context, context_key, None)

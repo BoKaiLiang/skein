@@ -3,10 +3,10 @@ import json
 import inspect
 import textwrap
 
-from .player_selection import PLAYER_CONTROLLED, get_source_selection_record, validate_player_selection
 from . import clip_picker
 from .property_groups import hash_over_64
-from .action_validation import CHARACTER_CONTROLLER, get_object_action_diagnostics
+from .authoring import cached_description, field_widget, preview_operation
+from . import action_preview, authoring_sync, validation
 
 # ---------------------------------- #
 #  Skein Panel for adding components #
@@ -128,157 +128,70 @@ class SkeinPanelBone(bpy.types.Panel):
         obj = context.bone
         draw_generic_panel(context, obj, self.layout, "bone", "BONE_PT_skein_preset_panel")
 
+def wrapped(layout, text, icon='INFO'):
+    region = bpy.context.region
+    scale = bpy.context.preferences.system.ui_scale
+    width = max(16, min(55, int(region.width / (7.5 * scale)) - 4)) if region else 55
+    for line in textwrap.wrap(text, width=width):
+        layout.label(text=line, icon=icon)
+
+
 def draw_generic_panel(context, obj, layout, execute_mode, skein_preset_panel_id):
-        
-        global_skein = context.window_manager.skein
-        # TODO: the registry can likely be loaded into a dict in a less
-        # common place. This function runs every draw
-        registry = json.loads(global_skein.registry)
-        skein_property_groups = context.window_manager.skein_property_groups
-
-        if not registry:
-            import textwrap 
-
-            description = "The skein-registry.json text block does not exist. You can create it by fetching from a remote location or by creating the file locally."
-            wrapper = textwrap.TextWrapper(width=50)
-            text_lines = wrapper.wrap(text=description)
-            
-            for text in text_lines:
-                row = layout.row(align = True)
-                row.alignment = 'EXPAND'
-                row.label(text=text)
-
-            row = layout.row(align=True)
-            row.operator("wm.fetch_type_registry", text="Remote")
-            row.operator("wm.reload_skein_registry", text="Local")
-            return
-
-        row = layout.row()
-
-        if registry:
-            row = layout.row(align=True)
-            row.operator("wm.fetch_type_registry", text="Fetch a Remote Type Registry")
-
-            layout.label(text="Insert a new Component")
-            box = layout.box()
-            box.prop_search(
-                context.window_manager,
-                'selected_component',
-                global_skein,
-                "components",
-                text="type",
-                icon="BOIDS"
-            )
-
-            row = box.row()
-            row.operator(execute_mode + ".insert_component")
-
-        if execute_mode == "object" and CHARACTER_CONTROLLER in registry:
-            row = layout.row(align=True)
-            row.operator("object.skein_copy_controller")
-            row.operator("object.skein_paste_controller")
-
-        layout.label(text="Components on this " + execute_mode + ":")
-
-        layout.template_list(
-            "UI_UL_list",
-            "components list",
-            obj,
-            "skein_two",
-            obj,
-            "active_component_index"
-        )
-
-        if execute_mode == "object" and any(
-            component.selected_type_path == CHARACTER_CONTROLLER for component in obj.skein_two
-        ):
-            draw_action_diagnostics(layout, obj)
-
-        if any(component.selected_type_path in (CHARACTER_CONTROLLER, PLAYER_CONTROLLED) for component in obj.skein_two):
-            draw_player_selection(layout, obj)
-
-        # build the form ui
-        # obj_skein is an array of component data
-        obj_skein = obj.skein_two
-        if registry and obj_skein:
-            active_component_data = obj_skein[obj.active_component_index]
-            type_path = active_component_data.selected_type_path
-
-            row = layout.row()
-            col = row.column()
-            col.label(text=active_component_data.selected_type_path, icon='BOIDS')
-
-            col = row.column()
-            col.popover(
-                panel=skein_preset_panel_id,
-                icon='PRESET',
-                text="",
-            )
-
-            row = layout.row()
-            row.operator(execute_mode + ".remove_component")
-
-            row = layout.row()
-            row.separator()
-
-            if inspect.isclass(skein_property_groups[type_path]):
-                if hash_over_64(type_path) not in active_component_data:
-                    layout.label(text=active_component_data.name + " has no data to edit")
-                else:
-                    render_two(layout, active_component_data, hash_over_64(type_path), clip_object=obj if execute_mode == "object" and type_path == CHARACTER_CONTROLLER else None)
-            else:
-                layout.prop(active_component_data, hash_over_64(type_path))
-
-def draw_player_selection(layout, obj):
+    registry = json.loads(context.window_manager.skein.registry)
+    state = authoring_sync.status()
+    wrapped(layout, state['message'])
+    layout.operator('wm.skein_sync_authoring', text='Sync with Bevy', icon='FILE_REFRESH')
+    if state.get('fetched_at'):
+        wrapped(layout, 'Cached Rust defaults: ' + state['fetched_at'])
+    if not registry:
+        wrapped(layout, 'Start the Bevy application with Skein enabled. The registry will load automatically. Enable Online Access in Blender Preferences to connect.')
+        return
+    layout.label(text='Insert a new Component')
     box = layout.box()
-    record = get_source_selection_record(obj)
-    messages = ['Choose the player: Insert Component → poc_design_editor::PlayerControlled on the same Object as CharacterController. Enable it on exactly one character across all loaded models; false opts out.']
-    diagnostics = validate_player_selection([record])
-    if not diagnostics and record[2]:
-        messages.append('PlayerControlled enabled: this Object is a player candidate.')
-    for message in messages:
-        for line in textwrap.wrap(message, width=55):
-            box.label(text=line, icon='INFO')
-    for diagnostic in diagnostics:
-        message = diagnostic['message'] if diagnostic['severity'] == 'ERROR' else 'This Object is not marked for player control. Only a sole unmarked controller uses legacy fallback.'
-        for line in textwrap.wrap(message, width=55):
-            box.label(text=line, icon='ERROR' if diagnostic['severity'] == 'ERROR' else 'INFO')
+    box.prop_search(context.window_manager, 'selected_component', context.window_manager.skein,
+                    'components', text='Type', icon='BOIDS')
+    box.operator(execute_mode + '.insert_component')
+    layout.label(text='Components on this ' + execute_mode + ':')
+    layout.template_list('SKEIN_UL_components', 'components list', obj, 'skein_two', obj, 'active_component_index')
+    wrapped(layout, 'Right-click a component row to Copy, Paste or Reset its values.')
+    if not obj.skein_two:
+        return
+    index = min(max(obj.active_component_index, 0), len(obj.skein_two) - 1)
+    component = obj.skein_two[index]
+    type_path = component.selected_type_path
+    layout.label(text=type_path, icon='BOIDS')
+    layout.operator(execute_mode + '.remove_component')
+    row = layout.row()
+    row.popover(panel=skein_preset_panel_id, icon='PRESET', text='Presets')
+    for diagnostic in validation.get_owner_diagnostics(obj):
+        wrapped(layout, diagnostic['field'] + ': ' + diagnostic['message'],
+                'ERROR' if diagnostic['severity'] == 'ERROR' else 'INFO')
+    description = cached_description()
+    if execute_mode == 'object' and description.get('fields'):
+        clip_picker.request_clip_refresh(context, obj)
+        layout.prop(context.scene.skein_extension_properties, 'clip_export_mode')
+        layout.prop(context.scene.skein_extension_properties, 'clip_export_animations')
+        layout.operator('wm.skein_refresh_clips', text='Refresh exported clips', icon='FILE_REFRESH')
+        wrapped(layout, 'Clip choices use the glTF animation names. Match these discovery settings to final export; final export checks clips again.')
+        error = clip_picker.cached_clip_error(obj)
+        if error:
+            wrapped(layout, error, 'ERROR')
+    for operation in description.get('previews', []):
+        if operation['component_type'] == type_path and operation.get('stop'):
+            button = layout.operator('wm.skein_stop_action_preview', text='Stop preview', icon='PAUSE')
+            button.component_type = type_path
+            button.list_field = operation['list_field']
+    groups = context.window_manager.skein_property_groups
+    if type_path not in groups:
+        wrapped(layout, 'This component is unavailable in the current registry. Its saved data is retained.', 'ERROR')
+        return
+    if inspect.isclass(groups[type_path]):
+        render_two(layout, component, hash_over_64(type_path), clip_object=obj if execute_mode == 'object' else None, component=component)
+    else:
+        layout.prop(component, hash_over_64(type_path))
 
 
-def draw_action_diagnostics(layout, obj):
-    box = layout.box()
-    for line in textwrap.wrap(
-        "Mapped Idle/Move/Jump actions and bound action keys play in ARForge Preview. Key bindings are saved/exported.",
-        width=55,
-    ):
-        box.label(text=line, icon='INFO')
-    for line in textwrap.wrap(
-        'Export and reload the model in ARForge first. Preview in ARForge works with any binding. Loops play until Stop preview; one-shots return automatically. Playback runs in ARForge, not the Blender timeline.',
-        width=55,
-    ):
-        box.label(text=line, icon='INFO')
-    box.operator('wm.skein_stop_action_preview', text='Stop preview', icon='PAUSE')
-    clip_picker.request_clip_refresh(bpy.context, obj)
-    box.prop(bpy.context.scene.skein_extension_properties, 'clip_export_mode')
-    box.prop(bpy.context.scene.skein_extension_properties, 'clip_export_animations')
-    box.operator('wm.skein_refresh_clips', text='Refresh exported clips', icon='FILE_REFRESH')
-    if bpy.context.mode != 'OBJECT':
-        box.label(text='Clip refresh waits for Object Mode.', icon='INFO')
-    for line in textwrap.wrap('Picker uses the active scene with default glTF settings and the mode above. Match final export settings; final export revalidates clips.', width=55):
-        box.label(text=line)
-    error = clip_picker.cached_clip_error(obj)
-    if error:
-        for line in textwrap.wrap('Clip discovery failed: ' + error, width=55):
-            box.label(text=line, icon='ERROR')
-        box.label(text='Use Refresh exported clips to retry.', icon='INFO')
-    for diagnostic in get_object_action_diagnostics(obj):
-        message = f'{diagnostic["field"]}: {diagnostic["message"]}'
-        icon = 'ERROR' if diagnostic['severity'] == 'ERROR' else 'INFO'
-        for line in textwrap.wrap(message, width=55):
-            box.label(text=line, icon=icon)
-
-
-def render_two(layout, context, context_key, clip_object=None):
+def render_two(layout, context, context_key, clip_object=None, component=None):
     if context_key not in context:
         # A schema update may introduce an empty list on an existing component.
         value = getattr(context, context_key, None)
@@ -315,15 +228,16 @@ def render_two(layout, context, context_key, clip_object=None):
             row = item.row(align=True)
             row.label(text=f"Item {index + 1}")
             row.context_pointer_set("skein_list", obj)
+            for direction, icon in (('UP', 'TRIA_UP'), ('DOWN', 'TRIA_DOWN')):
+                button = row.operator('wm.skein_list_move', text='', icon=icon)
+                button.index, button.direction = index, direction
             row.operator("wm.skein_list_remove", text="", icon="REMOVE").index = index
             if entry.__annotations__["value"].function.__name__ == "PointerProperty":
-                render_two(item, entry, "value", clip_object=clip_object)
-                if (clip_object is not None and context_key == 'actions'
-                        and {'id', 'clip', 'looped', 'speed', 'binding'} <= entry.value.__annotations__.keys()):
-                    operation = item.operator('wm.skein_action_preview', text='Preview in ARForge', icon='PLAY')
-                    operation.target_object = clip_object.name
-                    operation.target_path = entry.value.path_from_id()
-                    operation.action_id = entry.value.id
+                render_two(item, entry, "value", clip_object=clip_object, component=component)
+                operation = preview_operation(cached_description(), component.selected_type_path, context_key) if component else None
+                if clip_object is not None and operation:
+                    button = item.operator('wm.skein_action_preview', text=operation['label'], icon='PLAY')
+                    action_preview.capture_target(button, clip_object, component, context_key, entry.value)
             else:
                 item.prop(entry, "value", text="Value")
         return
@@ -340,7 +254,7 @@ def render_two(layout, context, context_key, clip_object=None):
                 case "Some":
                     layout.separator(type="LINE")
                     if "PointerProperty" == annotations["Some"].function.__name__:
-                        render_two(layout, obj, "Some", clip_object=clip_object)
+                        render_two(layout, obj, "Some", clip_object=clip_object, component=component)
                     else:
                         layout.prop(obj, "Some")
             return
@@ -364,7 +278,7 @@ def render_two(layout, context, context_key, clip_object=None):
             # recurse down into the enum
             case value:
                 if "PointerProperty" == annotations[value].function.__name__:
-                    render_two(layout.box(), obj, value, clip_object=clip_object)
+                    render_two(layout.box(), obj, value, clip_object=clip_object, component=component)
                 else:
                     layout.prop(obj, value)
         return
@@ -513,21 +427,21 @@ def render_two(layout, context, context_key, clip_object=None):
                 next_type = getattr(obj, key)
                 match next_type.type_override:
                     case "glam::Vec2" | "glam::DVec2" | "glam::I8Vec2" | "glam::U8Vec2" | "glam::I16Vec2" | "glam::U16Vec2" | "glam::IVec2" | "glam::UVec2" | "glam::I64Vec2" | "glam::U64Vec2" | "glam::BVec2":
-                        render_two(layout, obj, key, clip_object=clip_object)
+                        render_two(layout, obj, key, clip_object=clip_object, component=component)
                     case "glam::Vec3" | "glam::Vec3A" | "glam::DVec3" | "glam::I8Vec3" | "glam::U8Vec3" | "glam::I16Vec3" | "glam::U16Vec3" | "glam::IVec3" | "glam::UVec3" | "glam::I64Vec3" | "glam::U64Vec3" | "glam::BVec3":
-                        render_two(layout, obj, key, clip_object=clip_object)
+                        render_two(layout, obj, key, clip_object=clip_object, component=component)
                     case "glam::Vec4" | "glam::DVec4" | "glam::I8Vec4" | "glam::U8Vec4" | "glam::I16Vec4" | "glam::U16Vec4" | "glam::IVec4" | "glam::UVec4" | "glam::I64Vec4" | "glam::U64Vec4" | "glam::BVec4":
-                        render_two(layout, obj, key, clip_object=clip_object)
+                        render_two(layout, obj, key, clip_object=clip_object, component=component)
                     case "glam::Quat" | "glam::DQuat":
-                        render_two(layout, obj, key, clip_object=clip_object)
+                        render_two(layout, obj, key, clip_object=clip_object, component=component)
                     case _:
                         layout.label(text=key + ":")
-                        render_two(layout.box(), obj, key, clip_object=clip_object)
+                        render_two(layout.box(), obj, key, clip_object=clip_object, component=component)
             except AttributeError:
                 layout.label(text=key + ":")
-                render_two(layout.box(), obj, key, clip_object=clip_object)
+                render_two(layout.box(), obj, key, clip_object=clip_object, component=component)
         else:
-            if clip_object is not None and key in ('clip', 'idle', 'move_clip', 'move', 'jump') and value.function.__name__ == 'StringProperty':
+            if clip_object is not None and field_widget(cached_description(), getattr(obj, '_skein_type_path', ''), key) == 'animation_clip' and value.function.__name__ == 'StringProperty':
                 clip_picker.draw_clip_field(layout, obj, key, clip_object)
             else:
                 layout.prop(obj, key)

@@ -9,6 +9,62 @@ tldr:
 3. Export to glTF
 4. Components are instantiated when spawning in Bevy
 
+## Local fork authoring tools
+
+This branch adds generic List editing, project-described animation dropdowns,
+whole-component Copy/Paste/Reset, automatic registry/default caching, and export
+validation. It targets Bevy 0.19.0, Rust `bevy_skein` 0.6.0, and Blender 5.2+.
+The addon version is 0.1.22. The upstream compatibility table below describes
+upstream releases, not this fork's tested support.
+
+Remove the official addon, install this fork's ZIP with Blender's **Install from
+Disk**, and enable it. Start a Bevy application with Skein BRP enabled. With
+Blender Online Access allowed, registry, Rust defaults and optional authoring
+metadata synchronize automatically. A saved `.blend` restores its caches offline.
+No Text Editor or manual JSON import is needed. Sync failures keep authored data.
+
+Right-click a Skein component row to copy its whole value, paste into an existing
+component of the exact same type, or reset to its cached Rust Default. Paste and
+Reset each create one Undo step. Missing defaults disable Reset with a reason.
+The first version refuses unsupported or lossy values, including Map/Set/Array,
+multi-field tuples, opaque values and references needing remapping. It preserves
+existing values on rejection. Bone whole-component clipboard operations are not
+supported yet.
+
+Projects insert `authoring::AuthoringRegistry` before adding `SkeinPlugin` to
+advertise String animation fields and optional validation/preview methods.
+Editors are keyed by the defining reflected type and field, including nested
+Struct/Option/List values. The addon has no game-specific component names or
+animation policies. `skein/authoring` returns `skein.authoring/v1`.
+Animation choices use actual final glTF names within the owning Object hierarchy.
+Missing/ambiguous references retain their values and block export. Every declared
+Clip field is checked, even if project logic currently overrides it.
+
+The project validation method receives current final-export records as
+`{"objects":[{"name":"...","kind":"Object","components":[{"project::Type":{}}]}]}`.
+It returns `{"diagnostics":[{"severity":"ERROR","object":"...","field":"...","message":"..."}]}`.
+Local schema and Clip checks run offline. An unavailable project check warns
+that it is unverified; returned errors and malformed responses abort before a
+last-good GLB is replaced. Previews use advertised methods and request-field
+mappings, keeping runtime playback policy in the project.
+
+Authoring regression commands, using a test-owned Blender process:
+
+```sh
+python3 tools/test_authoring.py
+python3 tools/test_connection.py
+Blender --background --factory-startup --online-mode --python-exit-code 1 --python tools/test_authoring_sync.py
+Blender --background --factory-startup --offline-mode --python-exit-code 1 --python tools/test_lists.py
+Blender --background --factory-startup --online-mode --python-exit-code 1 --python tools/test_action_preview.py
+Blender --background --factory-startup --offline-mode --python-exit-code 1 --python tools/test_action_validation.py
+Blender --background --factory-startup --offline-mode --python-exit-code 1 --python tools/test_clip_picker.py
+Blender --factory-startup --offline-mode --python-exit-code 1 --python tools/test_component_values.py
+```
+
+The final command needs a GUI system clipboard on macOS and restores it before
+quitting. Do not run it alongside another clipboard test or an artist's Blender
+session.
+
 ## Quickstart
 
 Add the plugin and reflect component data (`reflect(Component)` is important!)

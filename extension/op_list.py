@@ -39,4 +39,22 @@ class SkeinListRemove(bpy.types.Operator):
         return {'FINISHED'}
 
 
-register, unregister = bpy.utils.register_classes_factory((SkeinListAdd, SkeinListRemove))
+class SkeinListMove(bpy.types.Operator):
+    """Move this reflected list item one place"""
+    bl_idname = "wm.skein_list_move"
+    bl_label = "Move List Item"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    index: bpy.props.IntProperty(min=0)
+    direction: bpy.props.EnumProperty(items=[('UP', 'Up', ''), ('DOWN', 'Down', '')])
+
+    def execute(self, context):
+        target = active_list(context)
+        destination = self.index + (-1 if self.direction == 'UP' else 1)
+        if target is None or not (0 <= self.index < len(target.entries) and 0 <= destination < len(target.entries)):
+            return {'CANCELLED'}
+        target.entries.move(self.index, destination)
+        return {'FINISHED'}
+
+
+register, unregister = bpy.utils.register_classes_factory((SkeinListAdd, SkeinListRemove, SkeinListMove))

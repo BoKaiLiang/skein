@@ -1,7 +1,6 @@
 import json
 import bpy
 
-from .player_selection import PLAYER_CONTROLLED
 from .object_to_form import object_to_form
 from .property_groups import hash_over_64
 
@@ -137,8 +136,6 @@ def insert_component_data(context, obj):
             # the UI. This is why we touch all PointerProperty fields
             # to make sure they're initialized.
             touch_all_fields(new_component, hash_over_64(new_component.selected_type_path))
-            if selected_component == PLAYER_CONTROLLED:
-                object_to_form(new_component, hash_over_64(selected_component), {'enabled': True})
 
             # If we inserted a new component, update the 
             # active_component_index to show the right editor

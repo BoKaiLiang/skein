@@ -152,6 +152,7 @@ def make_property(
                         # can be accessed elsewhere by type_path
                         skein_property_groups[type_path] = type(hash_type_path(capitalize_path(type_path)), (ComponentData,), {
                             '__annotations__': annotations,
+                            '_skein_type_path': type_path,
                             "is_core_option": True
                         })
                     else:
@@ -159,6 +160,7 @@ def make_property(
                         # can be accessed elsewhere by type_path
                         skein_property_groups[type_path] = type(hash_type_path(capitalize_path(type_path)), (ComponentData,), {
                             '__annotations__': annotations,
+                            '_skein_type_path': type_path,
                         })
 
                     # registering the class is required for certain Blender
@@ -259,6 +261,7 @@ def make_property(
             t = hash_type_path(capitalize_path(type_path))
             skein_property_groups[type_path] = type(t, (ComponentData,), {
                 '__annotations__': annotations,
+                            '_skein_type_path': type_path,
                 'type_override': type_path
             })
 
@@ -514,6 +517,7 @@ def make_property(
                             t = capitalize_path(type_path)
                             skein_property_groups[type_path] = type(t, (ComponentData,), {
                                 '__annotations__': annotations,
+                            '_skein_type_path': type_path,
                             })
 
                             # registering the class is required for certain Blender

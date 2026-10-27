@@ -1,6 +1,6 @@
 import bpy # type: ignore
 import json
-from . import clip_picker, action_preview, controller_clipboard
+from . import clip_picker, action_preview, component_values, authoring_sync
 from bpy.app.handlers import persistent
 from .op_apply_preset import register as register_op_apply_preset, unregister as unregister_op_apply_preset
 from .op_list import register as register_op_list, unregister as unregister_op_list
@@ -95,7 +95,7 @@ def on_select_new_component(self, context):
 @persistent
 def on_post_blend_file_load(blend_file):
     """blend file is empty if its the startup scene"""
-    bpy.ops.wm.reload_skein_registry()
+    authoring_sync.bootstrap()
 
 
 cli_commands = []
@@ -180,7 +180,7 @@ def register():
     register_op_list()
     clip_picker.register()
     action_preview.register()
-    controller_clipboard.register()
+    component_values.register()
     # panel
     register_skein_panel()
     register_skein_sidepanel()
@@ -193,7 +193,7 @@ def register():
     bpy.utils.register_class(SkeinExtensionProperties)
     bpy.types.Scene.skein_extension_properties = bpy.props.PointerProperty(type=SkeinExtensionProperties)
 
-    # add handlers to run when .blend file loads
+    authoring_sync.register()
     bpy.app.handlers.load_post.append(on_post_blend_file_load)
 
     cli_commands.append(bpy.utils.register_cli_command("dump_component_data", dump_component_data))
@@ -204,6 +204,9 @@ def register():
     exporter_extension_layout_draw['Skein'] = draw_export # Make sure to use the same name in unregister()
 
 def unregister():
+    if on_post_blend_file_load in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(on_post_blend_file_load)
+    authoring_sync.unregister()
     global_skein = bpy.context.window_manager.skein
     skein_property_groups = bpy.context.window_manager.skein_property_groups
 
@@ -244,7 +247,7 @@ def unregister():
     ## Preset Operations
     unregister_op_apply_preset()
     unregister_op_list()
-    controller_clipboard.unregister()
+    component_values.unregister()
     action_preview.unregister()
     clip_picker.unregister()
     # panel

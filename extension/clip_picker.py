@@ -69,9 +69,51 @@ def clip_cache_signature(context, obj):
         actions.append((action.as_pointer(), action.name,
                         tuple((slot.identifier, slot.target_id_type) for slot in action.slots), tuple(curves)))
     scene = context.scene
+    layers = []
+    def layer_signature(layer):
+        layers.append((layer.collection.as_pointer(), layer.exclude, layer.hide_viewport,
+                       layer.collection.hide_viewport, layer.collection.hide_render))
+        for child in layer.children:
+            layer_signature(child)
+    layer_signature(context.view_layer.layer_collection)
     return (obj.as_pointer(), scene.as_pointer(), settings.clip_export_mode, settings.clip_export_animations,
             scene.frame_start, scene.frame_end, scene.render.fps, scene.render.fps_base,
-            tuple(objects), tuple(actions))
+            tuple(objects), tuple(actions), tuple(layers))
+
+
+def capture_state(context):
+    """Restore editor state after discovery or an aborted export."""
+    frame = (context.scene.frame_current, context.scene.frame_subframe)
+    active = context.view_layer.objects.active
+    mode = active.mode if active else 'OBJECT'
+    selected = tuple(context.selected_objects)
+    animations = []
+    for item in bpy.data.objects:
+        keys = getattr(item.data, 'shape_keys', None)
+        for source in (item, keys):
+            data = source.animation_data if source else None
+            if data:
+                animations.append((data, data.action, data.action_slot, data.use_nla,
+                    [(track, track.mute, track.is_solo) for track in data.nla_tracks]))
+    def restore():
+        if context.object and context.object.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        for data, action, slot, use_nla, tracks in animations:
+            data.action = action
+            if slot and action:
+                data.action_slot = slot
+            data.use_nla = use_nla
+            for track, mute, solo in tracks:
+                track.mute, track.is_solo = mute, solo
+        context.scene.frame_set(frame[0], subframe=frame[1])
+        for item in context.view_layer.objects:
+            item.select_set(item in selected)
+        context.view_layer.objects.active = active
+        if active and mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode=mode)
+        if context.window:
+            context.window.cursor_set('DEFAULT')
+    return restore
 
 
 def refresh_clip_cache(context, obj):
@@ -81,17 +123,7 @@ def refresh_clip_cache(context, obj):
         raise RuntimeError('Clip discovery requires Object Mode; return to Object Mode to refresh exported clips.')
     if _discovery is not None:
         return cached_clip_names(obj)
-    original_frame = (context.scene.frame_current, context.scene.frame_subframe)
-    original_active = context.view_layer.objects.active
-    original_selection = tuple(context.selected_objects)
-    animations = []
-    for item in bpy.data.objects:
-        shape_keys = getattr(item.data, 'shape_keys', None)
-        for source in (item, shape_keys):
-            data = source.animation_data if source else None
-            if data:
-                animations.append((data, data.action, data.action_slot, data.use_nla,
-                                   [(track, track.mute, track.is_solo) for track in data.nla_tracks]))
+    restore = capture_state(context)
     settings = context.scene.skein_extension_properties
     token = str(uuid.uuid4())
     _discovery = {'id': token, 'clips': {}}
@@ -107,7 +139,7 @@ def refresh_clip_cache(context, obj):
             if result != {'FINISHED'}:
                 raise RuntimeError('Clip discovery export did not finish.')
         if obj.name not in _discovery['clips']:
-            raise RuntimeError('Skein export hook did not discover this CharacterController. Enable Skein in Blender Preferences and ensure the character is exported.')
+            raise RuntimeError('Skein export hook did not discover this Object. Enable Skein in Blender Preferences and ensure the Object is exported.')
         names = _discovery['clips'][obj.name]
         _cache[obj.as_pointer()] = {'names': names, 'error': None}
         return names
@@ -116,20 +148,7 @@ def refresh_clip_cache(context, obj):
         raise
     finally:
         _discovery = None
-        for data, action, slot, use_nla, tracks in animations:
-            data.action = action
-            if slot and action:
-                data.action_slot = slot
-            data.use_nla = use_nla
-            for track, mute, solo in tracks:
-                track.mute = mute
-                track.is_solo = solo
-        context.scene.frame_set(original_frame[0], subframe=original_frame[1])
-        for item in context.view_layer.objects:
-            item.select_set(item in original_selection)
-        context.view_layer.objects.active = original_active
-        if context.window:
-            context.window.cursor_set('DEFAULT')
+        restore()
         _cache[obj.as_pointer()]['signature'] = clip_cache_signature(context, obj)
         _last_checks[obj.as_pointer()] = time.monotonic()
         while len(_cache) > 64:
@@ -208,8 +227,9 @@ def draw_clip_field(layout, form, field, obj):
     names = cached_clip_names(obj)
     current = getattr(form, field)
     row.menu('SKEIN_MT_exported_clips', text='', icon='DOWNARROW_HLT')
-    if names is not None and current and current not in names:
-        for line in textwrap.wrap(f'Missing exported clip: {current}', width=55):
+    from .authoring import selectable_clips
+    if names is not None and current and current not in selectable_clips(names):
+        for line in textwrap.wrap(f'Missing or ambiguous exported clip: {current}', width=55):
             layout.label(text=line, icon='ERROR')
 
 
@@ -221,6 +241,7 @@ class SkeinChooseClip(bpy.types.Operator):
     clip: bpy.props.StringProperty() # type: ignore
     target_object: bpy.props.StringProperty(options={'HIDDEN'}) # type: ignore
     target_path: bpy.props.StringProperty(options={'HIDDEN'}) # type: ignore
+    target_pointer: bpy.props.StringProperty(options={'HIDDEN'}) # type: ignore
 
     def execute(self, context):
         owner = bpy.data.objects.get(self.target_object)
@@ -228,8 +249,16 @@ class SkeinChooseClip(bpy.types.Operator):
             form = owner.path_resolve(self.target_path) if owner else None
         except (ValueError, TypeError):
             form = None
-        if form is None or self.field not in getattr(form, '__annotations__', {}):
+        if (form is None or str(form.as_pointer()) != self.target_pointer
+                or self.field not in getattr(form, '__annotations__', {})):
             self.report({'WARNING'}, 'The animation clip field is unavailable; reopen the clip menu and choose again.')
+            return {'CANCELLED'}
+        from .authoring import selectable_clips
+        entry = _cache.get(owner.as_pointer(), {})
+        names = cached_clip_names(owner)
+        if (entry.get('signature') != clip_cache_signature(context, owner)
+                or names is None or self.clip not in selectable_clips(names)):
+            self.report({'WARNING'}, 'The exported clip choices changed; refresh and choose again.')
             return {'CANCELLED'}
         setattr(form, self.field, self.clip)
         return {'FINISHED'}
@@ -250,14 +279,19 @@ class SkeinExportedClips(bpy.types.Menu):
         elif names is None:
             self.layout.label(text='Discovering exported clips…')
         elif not names:
-            self.layout.label(text='No exported clips in this character')
+            self.layout.label(text='No exported clips in this Object hierarchy')
         else:
-            for name in dict.fromkeys(names):
+            from .authoring import selectable_clips
+            choices = selectable_clips(names)
+            if not choices:
+                self.layout.label(text='No unambiguous exported clip names', icon='ERROR')
+            for name in choices:
                 operation = self.layout.operator('wm.skein_choose_clip', text=name)
                 operation.field = context.skein_clip_field
                 operation.clip = name
                 operation.target_object = obj.name
                 operation.target_path = context.skein_clip_target.path_from_id()
+                operation.target_pointer = str(context.skein_clip_target.as_pointer())
 
 
 class SkeinRefreshClips(bpy.types.Operator):

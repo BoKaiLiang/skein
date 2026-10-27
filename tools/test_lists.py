@@ -184,19 +184,13 @@ class ListTests(unittest.TestCase):
         render_two(layout, controller, "actions")
         self.assertEqual(layout.operators.count("wm.skein_list_remove"), 2)
 
-    def test_character_panel_wraps_diagnostics_and_describes_bound_actions(self):
-        from extension.skein_panel import draw_action_diagnostics
-        bpy.context.window_manager.selected_component = "poc_design_editor::CharacterController"
-        bpy.ops.object.insert_component()
-        object_to_form(self.obj.skein_two[-1], "poc_design_editor::CharacterController", DATA)
+    def test_panel_metadata_tracks_defining_type_and_list_moves(self):
+        self.assertEqual(self.container.Controller._skein_type_path, 'Controller')
+        object_to_form(self.container, "Controller", DATA)
+        self.assertEqual(self.container.Controller.actions.entries[0].value._skein_type_path, 'Action')
         layout = RecordingLayout()
-        layout.prop = lambda *args, **kwargs: None
-        draw_action_diagnostics(layout, self.obj)
-        text = " ".join(layout.labels)
-        self.assertIn("saved/exported", text)
-        self.assertIn("bound action keys play", text)
-        self.assertIn("actions[0].id", text)
-        self.assertTrue(all(len(line) <= 55 for line in layout.labels))
+        render_two(layout, self.container.Controller, "actions")
+        self.assertEqual(layout.operators.count('wm.skein_list_move'), 4)
 
     def test_list_operators(self):
         from extension import op_list
@@ -222,6 +216,17 @@ class ListTests(unittest.TestCase):
             self.assertEqual(bpy.ops.wm.skein_list_add(), {"FINISHED"})
         self.assertEqual(get_data_from_active_editor(self.container, "Controller")["groups"], [[]])
         self.assertEqual(bpy.ops.wm.skein_list_add(), {"CANCELLED"})
+
+    def test_list_move_up_down(self):
+        object_to_form(self.container, "Controller", DATA)
+        actions = self.container.Controller.actions
+        with bpy.context.temp_override(skein_list=actions):
+            self.assertTrue(hasattr(bpy.ops.wm, "skein_list_move"))
+            self.assertEqual(bpy.ops.wm.skein_list_move(index=1, direction='UP'), {'FINISHED'})
+            self.assertEqual(actions.entries[0].value.id, "roll")
+            self.assertEqual(bpy.ops.wm.skein_list_move(index=0, direction='DOWN'), {'FINISHED'})
+            self.assertEqual(actions.entries[0].value.id, "idle")
+            self.assertEqual(bpy.ops.wm.skein_list_move(index=0, direction='UP'), {'CANCELLED'})
 
     def test_save_reopen_and_registry_reload(self):
         object_to_form(self.container, "Controller", DATA)

@@ -1,128 +1,122 @@
-"""Manual animation playback in the running ARForge preview, through BRP."""
-from urllib.parse import urlsplit
+"""Run project-advertised list-item previews against the configured runtime."""
+import json
 
 import bpy
-import requests
 
-from .action_validation import CHARACTER_CONTROLLER, validate_character_controller
+from . import authoring, connection
+from .component_values import canonical, read_component
 from .form_to_object import get_data_from_active_editor
 from .property_groups import hash_over_64
 
-
-def request_preview(context, params):
-    if not bpy.app.online_access:
-        raise ValueError('Enable Online Access in Blender Preferences to connect to ARForge.')
-    addon = context.preferences.addons.get(__package__)
-    preferences = addon.preferences if addon else None
-    host = (preferences.host.strip() if preferences else '') or 'http://127.0.0.1'
-    port = (preferences.port.strip() if preferences else '') or '15702'
-    if '://' not in host:
-        host = 'http://' + host
-    try:
-        parsed = urlsplit(host)
-        valid_host = (parsed.scheme in ('http', 'https') and parsed.hostname
-                      and parsed.port is None and parsed.username is None
-                      and parsed.password is None and parsed.path in ('', '/')
-                      and not parsed.query and not parsed.fragment)
-    except ValueError:
-        valid_host = False
-    if not valid_host:
-        raise ValueError('Check Skein Host in Blender Preferences. Use an HTTP host and set Port separately.')
-    if not port.isascii() or not port.isdecimal() or not 1 <= int(port) <= 65535:
-        raise ValueError('Check Skein Port in Blender Preferences. Use a number from 1 to 65535.')
-    endpoint = f'{parsed.scheme}://{parsed.netloc}:{int(port)}'
-    payload = dict(jsonrpc='2.0', id=1, method='arforge/action_preview', params=params)
-    try:
-        response = requests.post(endpoint, json=payload, timeout=2)
-        response.raise_for_status()
-    except requests.Timeout as error:
-        raise ValueError(f'ARForge preview request timed out at {endpoint}. Check the running preview and Skein Host/Port.') from error
-    except requests.RequestException as error:
-        raise ValueError(f'Could not connect to ARForge at {endpoint}. Start ARForge Preview and check Skein Host/Port. {error}') from error
-    try:
-        body = response.json()
-    except ValueError as error:
-        raise ValueError('Invalid ARForge response. Check Skein Host/Port points to ARForge Preview.') from error
-    if isinstance(body, dict) and isinstance(body.get('error'), dict):
-        error = body['error']
-        if error.get('code') == -32601:
-            raise ValueError('This runtime has no action preview method; update and restart ARForge Preview.')
-        raise ValueError(str(error.get('message', 'ARForge preview request failed.')))
-    if (not isinstance(body, dict) or body.get('jsonrpc') != '2.0' or body.get('id') != 1
-            or not isinstance(body.get('result'), dict) or body['result'].get('ok') is not True):
-        raise ValueError('Invalid ARForge response. Check Skein Host/Port and update ARForge Preview.')
+ERRORS = (ValueError, TypeError, KeyError, AttributeError, ReferenceError, RuntimeError)
 
 
-def current_action(owner, path, expected_id):
+def _operation(component_type, list_field):
+    registry = json.loads(bpy.context.window_manager.skein.registry)
+    description = authoring.cached_description()
+    operation = authoring.preview_operation(description, component_type, list_field)
+    if operation is None:
+        raise ValueError('This preview is no longer advertised. Sync the runtime and reopen the component.')
+    return registry, operation
+
+
+def capture_target(operator, owner, component, list_field, entry_value):
+    """Capture the clicked owner and row before transient UI context disappears."""
+    operation = authoring.preview_operation(authoring.cached_description(), component.selected_type_path, list_field)
+    if operation is None:
+        raise ValueError('This preview is no longer advertised.')
+    form = getattr(component, hash_over_64(component.selected_type_path))
+    entries = getattr(form, list_field).entries
+    entry = next((entry for entry in entries if entry.value == entry_value), None)
+    if entry is None or component.id_data != owner:
+        raise ValueError('The preview item is unavailable on this component.')
+    value = get_data_from_active_editor(entry, 'value')
+    operator.target_object = owner.name
+    operator.component_path = component.path_from_id()
+    operator.component_type = component.selected_type_path
+    operator.list_field = list_field
+    operator.target_path = entry_value.path_from_id()
+    operator.component_pointer = str(component.as_pointer())
+    operator.target_pointer = str(entry_value.as_pointer())
     try:
-        target = owner.path_resolve(path) if owner else None
+        operator.identity_json = canonical(value[operation['identity_field']])
+    except (KeyError, ValueError):
+        # Invalid values must remain editable; execution reports the schema error.
+        operator.identity_json = ''
+
+
+def current_preview(operator):
+    registry, operation = _operation(operator.component_type, operator.list_field)
+    owner = bpy.data.objects.get(operator.target_object)
+    try:
+        component = owner.path_resolve(operator.component_path) if owner else None
+        target = owner.path_resolve(operator.target_path) if owner else None
     except (ValueError, TypeError):
-        target = None
-    for component in getattr(owner, 'skein_two', ()):
-        if component.selected_type_path != CHARACTER_CONTROLLER:
-            continue
-        controller = getattr(component, hash_over_64(CHARACTER_CONTROLLER), None)
-        for index, entry in enumerate(getattr(getattr(controller, 'actions', None), 'entries', ())):
-            if entry.value != target:
-                continue
-            data = get_data_from_active_editor(component, hash_over_64(CHARACTER_CONTROLLER))
-            action = data['actions'][index]
-            if action.get('id') != expected_id:
-                raise ValueError('The action changed; use Preview in ARForge on the current action row.')
-            fields = {f'actions[{index}].{name}' for name in ('id', 'clip', 'looped', 'speed')}
-            diagnostics = [item for item in validate_character_controller(data) if item['field'] in fields]
-            if diagnostics:
-                raise ValueError('; '.join(f'{item["field"]}: {item["message"]}' for item in diagnostics))
-            if sum(item.get('id') == expected_id for item in data['actions']) != 1:
-                raise ValueError(f'Duplicate action ID {expected_id!r}; choose a unique ID before previewing.')
-            return dict(action_id=action['id'], clip=action['clip'], looped=action['looped'], speed=action['speed'])
-    raise ValueError('The CharacterController action is unavailable; use Preview in ARForge on the current action row.')
+        component = target = None
+    if (not isinstance(component, bpy.types.PropertyGroup) or not isinstance(target, bpy.types.PropertyGroup)
+            or str(component.as_pointer()) != operator.component_pointer
+            or getattr(component, 'selected_type_path', None) != operator.component_type
+            or not any(item == component for item in owner.skein_two)
+            or str(target.as_pointer()) != operator.target_pointer):
+        raise ValueError('The preview component or item changed or is unavailable. Reopen the component and try again.')
+    form = getattr(component, hash_over_64(operator.component_type))
+    sequence = getattr(form, operator.list_field)
+    index = next((index for index, entry in enumerate(sequence.entries) if entry.value == target), None)
+    if index is None:
+        raise ValueError('The preview item is unavailable on this component.')
+    values = read_component(component, registry)[operator.list_field]
+    value = values[index]
+    identity = canonical(value[operation['identity_field']])
+    if identity != operator.identity_json:
+        raise ValueError('The preview item identity changed. Use the current item row and try again.')
+    if sum(canonical(item[operation['identity_field']]) == identity for item in values) != 1:
+        raise ValueError('Preview item identities must be unique in this list.')
+    return operation, authoring.preview_params(operation, value)
 
 
 class SkeinActionPreview(bpy.types.Operator):
-    """Play this exported action in ARForge. Export and reload the model first"""
+    """Run the project preview for this current list item"""
     bl_idname = 'wm.skein_action_preview'
-    bl_label = 'Preview in ARForge'
+    bl_label = 'Preview item'
     target_object: bpy.props.StringProperty(options={'HIDDEN'}) # type: ignore
+    component_path: bpy.props.StringProperty(options={'HIDDEN'}) # type: ignore
+    component_type: bpy.props.StringProperty(options={'HIDDEN'}) # type: ignore
+    list_field: bpy.props.StringProperty(options={'HIDDEN'}) # type: ignore
     target_path: bpy.props.StringProperty(options={'HIDDEN'}) # type: ignore
-    action_id: bpy.props.StringProperty(options={'HIDDEN'}) # type: ignore
+    component_pointer: bpy.props.StringProperty(options={'HIDDEN'}) # type: ignore
+    target_pointer: bpy.props.StringProperty(options={'HIDDEN'}) # type: ignore
+    identity_json: bpy.props.StringProperty(options={'HIDDEN'}) # type: ignore
 
     def execute(self, context):
         try:
-            # Carry the RNA path because UI popup context does not survive execution.
-            owner = bpy.data.objects.get(self.target_object)
-            params = current_action(owner, self.target_path, self.action_id)
-            request_preview(context, params)
-        except ValueError as error:
+            operation, params = current_preview(self)
+            connection.post(connection.endpoint(context), operation['method'], params)
+        except ERRORS as error:
             self.report({'ERROR'}, str(error))
             return {'CANCELLED'}
-        self.report({'INFO'}, 'Playing in ARForge. Looped actions play until Stop preview; one-shots return automatically.')
+        self.report({'INFO'}, 'Preview request sent to the runtime.')
         return {'FINISHED'}
 
 
 class SkeinStopActionPreview(bpy.types.Operator):
-    """Stop the manual action and return to state animation in ARForge"""
+    """Run the stop operation advertised by the project"""
     bl_idname = 'wm.skein_stop_action_preview'
     bl_label = 'Stop preview'
+    component_type: bpy.props.StringProperty(options={'HIDDEN'}) # type: ignore
+    list_field: bpy.props.StringProperty(options={'HIDDEN'}) # type: ignore
 
     def execute(self, context):
         try:
-            request_preview(context, {'stop': True})
-        except ValueError as error:
+            _, operation = _operation(self.component_type, self.list_field)
+            stop = operation.get('stop')
+            if stop is None:
+                raise ValueError('No stop operation is advertised for this preview.')
+            connection.post(connection.endpoint(context), stop['method'], stop['params'])
+        except ERRORS as error:
             self.report({'ERROR'}, str(error))
             return {'CANCELLED'}
-        self.report({'INFO'}, 'Manual action preview stopped in ARForge.')
+        self.report({'INFO'}, 'Stop preview request sent to the runtime.')
         return {'FINISHED'}
 
 
-classes = (SkeinActionPreview, SkeinStopActionPreview)
-
-
-def register():
-    for cls in classes:
-        bpy.utils.register_class(cls)
-
-
-def unregister():
-    for cls in reversed(classes):
-        bpy.utils.unregister_class(cls)
+register, unregister = bpy.utils.register_classes_factory((SkeinActionPreview, SkeinStopActionPreview))

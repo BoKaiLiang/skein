@@ -1,9 +1,6 @@
 import inspect
-from pathlib import Path
 import bpy # type: ignore
 import json
-import requests # type: ignore
-import os
 from .property_groups import hash_over_64, make_property
 # --------------------------------- #
 #  Fetch and store the bevy type    #
@@ -11,147 +8,130 @@ from .property_groups import hash_over_64, make_property
 # --------------------------------- #
 
 class FetchRemoteTypeRegistry(bpy.types.Operator):
-    """Fetch a Bevy type registry from a compatible endpoint"""
-    bl_idname = "wm.fetch_type_registry" # unique identifier. not specially named
-    bl_label = "Fetch a Remote Type Registry" # Shows up in the UI
-    bl_options = {'REGISTER', 'UNDO'} # enable undo (which we might not need)
+    """Synchronize registry, defaults and authoring data without blocking Blender"""
+    bl_idname = "wm.fetch_type_registry"
+    bl_label = "Sync Skein Authoring"
 
-    # execute is called to run the operator
     def execute(self, context):
-        debug = False
-        presets = False
-        host = ""
-        port = ""
-        if __package__ in context.preferences.addons:
-            preferences = context.preferences.addons[__package__].preferences
-            debug = preferences.debug
-            presets = preferences.presets
-            host = preferences.host or "http://127.0.0.1"
-            port = preferences.port or "15702"
-
-        if debug:
-            print("\nexecute: FetchRemoteTypeRegistry")
-
-        brp_response = None
-
-        try:
-            rpc_response = brp_simple_request("rpc.discover", host, port)
-            print(rpc_response)
-            if rpc_response is not None and "error" in rpc_response:
-                if debug:
-                    print("bevy request errored out", rpc_response["error"])
-                self.report({"ERROR"}, "request for Bevy registry data returned an error, is the Bevy Remote Protocol Plugin added and is the Bevy app running? :: " + brp_response["error"]["message"])
-                return {'CANCELLED'}
-            bevy_version = rpc_response["result"]["info"]["version"]
-            print(bevy_version)
-            if bevy_version.startswith("0.16"):
-                brp_response = brp_simple_request("bevy/registry/schema", host, port)
-            elif bevy_version.startswith("0.17"):
-                brp_response = brp_simple_request("registry.schema", host, port)
-            else:
-                # assume anything else is a bevy version "from the future"
-                # and use the most recent version's endpoint
-                brp_response = brp_simple_request("registry.schema", host, port)
-        except:
-            # The 0.15 version of Bevy didn't have an `rpc.discover` endpoint, which 
-            # means failing the request could either be: a 0.15 application *or* being unable
-            # to connect. Try 0.15's endpoint first
-            try:
-                brp_response = brp_simple_request("bevy/registry/schema", host, port)
-            except:
-                self.report({"ERROR"}, "Could not connect to bevy application to fetch registry data from the Bevy Remote Protocol using " + host + ":" + port)
-                return {'CANCELLED'}
-
-        # If the bevy remote protocol returns an error, report it to the user
-        if brp_response is not None and "error" in brp_response:
-            if debug:
-                print("bevy request errored out", brp_response["error"])
-            self.report({"ERROR"}, "request for Bevy registry data returned an error, is the Bevy Remote Protocol Plugin added and is the Bevy app running? :: " + brp_response["error"]["message"])
-            return {'CANCELLED'}
-
-        # write registry response to a file in .blend file
-        if "skein-registry.json" in bpy.data.texts:
-            embedded_registry = bpy.data.texts["skein-registry.json"]
-            embedded_registry.clear()
-            embedded_registry.write(json.dumps(brp_response["result"], indent=4))
-        else:
-            embedded_registry = bpy.data.texts.new("skein-registry.json")
-            embedded_registry.write(json.dumps(brp_response["result"], indent=4))
-
-        process_registry(context, brp_response["result"])
-        
-        # even if presets is enabled, the request failing should be handled gracefully
-        # *any* error reporting makes users think skein is totally broken and doesn't work.
-        # which is not true; if this request fails, we've already done the critical work
-        # of fetching the registry above. The only downside to hiding this error is that its
-        # harder to debug if something is wrong (you have to launch Blender from the console
-        # and view the output)
-        if presets:
-            try:
-                brp_response = brp_fetch_skein_presets(host, port)
-            except:
-                print("Could not connect to bevy application to fetch presets data from the Bevy Remote Protocol")
-                return {'FINISHED'}
-            
-            # If the bevy remote protocol returns an error, report it to the user
-            if brp_response is not None and "error" in brp_response:
-                print("request for Bevy registry data returned an error, is the Bevy Remote Protocol Plugin added and is the Bevy app running? :: " + brp_response["error"]["message"])
-                # self.report({"ERROR"}, "request for Bevy registry data returned an error, is the Bevy Remote Protocol Plugin added and is the Bevy app running? :: " + brp_response["error"]["message"])
-                return {'FINISHED'}
-
-            # write presets response to a file in .blend file
-            if "skein-presets.json" in bpy.data.texts:
-                embedded_presets = bpy.data.texts["skein-presets.json"]
-                embedded_presets.clear()
-                embedded_presets.write(json.dumps(brp_response["result"], indent=4))
-            else:
-                embedded_presets = bpy.data.texts.new("skein-presets.json")
-                embedded_presets.write(json.dumps(brp_response["result"], indent=4))
-
+        from .authoring_sync import request_sync
+        request_sync(context)
         return {'FINISHED'}
 
-def brp_simple_request(rpc_endpoint, host, port):
-    """Fetch the registry schema from a running Bevy application"""
-
-    # 0.16+ payload
-    data = {"jsonrpc": "2.0", "method": rpc_endpoint, "params": {}}
-    r = requests.post(host + ":" + str(port), json=data)
-    brp_response = r.json()
-    return brp_response
-
-def brp_fetch_skein_presets(host, port):
-    """Fetch the presets (and Default values) from a running Bevy application"""
-    
-    data = {"jsonrpc": "2.0", "method": "skein/presets", "params": {}}
-    r = requests.post(host + ":" + str(port), json=data)
-    brp_response = r.json()
-    return brp_response
 
 class ReloadSkeinRegistryJson(bpy.types.Operator):
-    """Reload the registry information from skein-registry.json and re-process it"""
-    bl_idname = "wm.reload_skein_registry" # unique identifier. not specially named
-    bl_label = "Reload Local Skein Registry" # Shows up in the UI
-    bl_options = {'REGISTER', 'UNDO'} # enable undo (which we might not need)
+    """Restore the cached authoring registry without a network request"""
+    bl_idname = "wm.reload_skein_registry"
+    bl_label = "Restore Cached Skein Registry"
 
-    # execute is called to run the operator
     def execute(self, context):
-        # if a skein-registry.json was already created, use it as the source of truth
-        if "skein-registry.json" in bpy.data.texts:
-            embedded_registry = json.loads(bpy.data.texts["skein-registry.json"].as_string())
-            process_registry(context, embedded_registry)
-        else:
-            # if we're trying to reload the registry file, and we haven't created one yet
-            # insert an empty object, which in turn means that the file will be created and
-            # is easier to access and modify by users who wish to do so.
-            data = json.loads("{}")
-            embedded_registry = bpy.data.texts.new("skein-registry.json")
-            embedded_registry.write(json.dumps(data, indent=4))
-            # read the file we just wrote, so that this code doesn't need to be updated in
-            # the future. If its in the skein-registry.json, then it will be processed
-            embedded_registry = json.loads(bpy.data.texts["skein-registry.json"].as_string())
-            process_registry(context, embedded_registry)
-
+        from .authoring_sync import restore_cache
+        restore_cache(context)
         return {'FINISHED'}
+
+
+def _references(value):
+    if isinstance(value, dict):
+        if '$ref' in value:
+            reference = value['$ref']
+            if not isinstance(reference, str) or not reference.startswith('#/$defs/') or not reference.removeprefix('#/$defs/'):
+                raise ValueError('Registry references must be nonempty #/$defs/ strings')
+            yield reference.removeprefix('#/$defs/')
+        for child in value.values():
+            yield from _references(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _references(child)
+
+
+def validate_registry(registry):
+    if not isinstance(registry, dict):
+        raise ValueError('Registry schema must be an object')
+    def field(value):
+        if not isinstance(value, dict) or not isinstance(value.get('type'), dict) or '$ref' not in value['type']:
+            raise ValueError('Registry fields must contain a reflected type reference')
+        list(_references(value))
+    def schema(value, name):
+        if not isinstance(value, dict) or value.get('kind') not in {
+            'Struct', 'Tuple', 'TupleStruct', 'Enum', 'List', 'Array', 'Map', 'Set', 'Value'}:
+            raise ValueError(f'Invalid reflected schema kind: {name}')
+        if value.get('typePath') != name or not isinstance(value.get('shortPath'), str):
+            raise ValueError(f'Invalid reflected type path: {name}')
+        if 'reflectTypes' in value and (not isinstance(value['reflectTypes'], list) or any(not isinstance(item, str) for item in value['reflectTypes'])):
+            raise ValueError(f'Invalid reflectTypes: {name}')
+        kind = value['kind']
+        if kind == 'Struct':
+            properties = value.get('properties', {})
+            if not isinstance(properties, dict) or any(not isinstance(key, str) for key in properties):
+                raise ValueError(f'Invalid struct properties: {name}')
+            for item in properties.values():
+                field(item)
+            required = value.get('required', [])
+            if not isinstance(required, list) or any(not isinstance(key, str) or key not in properties for key in required):
+                raise ValueError(f'Invalid required fields: {name}')
+        elif kind in ('Tuple', 'TupleStruct'):
+            fields = value.get('prefixItems', [])
+            if not isinstance(fields, list):
+                raise ValueError(f'Invalid tuple prefixItems: {name}')
+            for item in fields:
+                field(item)
+        elif kind in ('List', 'Array', 'Set'):
+            field(value.get('items'))
+        elif kind == 'Map':
+            field(value.get('keyType'))
+            field(value.get('valueType'))
+        elif kind == 'Enum':
+            variants = value.get('oneOf')
+            if value.get('type') not in ('string', 'object') or not isinstance(variants, list):
+                raise ValueError(f'Invalid enum variants: {name}')
+            for variant in variants:
+                if value['type'] == 'string':
+                    if not isinstance(variant, str) or not variant:
+                        raise ValueError(f'Invalid enum variant: {name}')
+                elif not isinstance(variant, dict) or not isinstance(variant.get('shortPath'), str) or not isinstance(variant.get('typePath'), str):
+                    raise ValueError(f'Invalid enum variant: {name}')
+                elif 'kind' in variant:
+                    schema(variant, variant['typePath'])
+        elif kind == 'Value' and value.get('type') not in ('boolean', 'int', 'uint', 'float', 'string', 'object', 'array'):
+            raise ValueError(f'Invalid scalar type: {name}')
+    for name, value in registry.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError('Registry type paths must be nonempty strings')
+        schema(value, name)
+        # Opaque engine schemas can refer to types omitted by registry.schema.
+        # Used component closures and value operations validate their own references.
+        list(_references(value))
+
+
+def component_owners():
+    for collection in ('objects', 'meshes', 'materials', 'scenes', 'cameras', 'lights', 'collections'):
+        yield from getattr(bpy.data, collection)
+    for armature in bpy.data.armatures:
+        yield from armature.bones
+
+
+def validate_registry_refresh(context, registry):
+    """Reject changes to schemas which currently own authored component data."""
+    validate_registry(registry)
+    previous = json.loads(context.window_manager.skein.registry)
+    pending = {component.selected_type_path for owner in component_owners()
+               for component in getattr(owner, 'skein_two', ())}
+    visited = set()
+    def shape(value):
+        if isinstance(value, dict):
+            return {key: sorted(child) if key == 'reflectTypes' else shape(child) for key, child in value.items()
+                    if key not in ('description', 'shortPath')}
+        if isinstance(value, list):
+            return [shape(child) for child in value]
+        return value
+    while pending:
+        type_path = pending.pop()
+        if type_path in visited:
+            continue
+        visited.add(type_path)
+        if type_path not in previous or type_path not in registry or shape(previous[type_path]) != shape(registry[type_path]):
+            raise ValueError(f'Cannot refresh used schema {type_path}; existing component data was kept. Migrate it with a compatible project version first.')
+        pending.update(_references(previous[type_path]))
+
 
 def process_registry(context, registry):
     """
