@@ -109,9 +109,10 @@ def component_owners():
         yield from armature.bones
 
 
-def validate_registry_refresh(context, registry):
+def validate_registry_refresh(context, registry, additive_fields=None):
     """Reject changes to schemas which currently own authored component data."""
     validate_registry(registry)
+    additive_fields = additive_fields or {}
     previous = json.loads(context.window_manager.skein.registry)
     pending = {component.selected_type_path for owner in component_owners()
                for component in getattr(owner, 'skein_two', ())}
@@ -141,7 +142,8 @@ def validate_registry_refresh(context, registry):
         for name in added:
             path = next(_references(new_fields[name]), None)
             child = registry.get(path, {})
-            if not (child.get('kind') == 'List' or
+            explicit_addition = name in additive_fields.get(after['typePath'], ())
+            if not (explicit_addition or child.get('kind') == 'List' or
                     (child.get('kind') == 'Enum' and child.get('modulePath') == 'core::option'
                      and path.startswith('core::option::Option<'))):
                 return False
@@ -149,8 +151,8 @@ def validate_registry_refresh(context, registry):
                 ensure_supported(registry, path)
             except ValueError:
                 return False
-        # Existing fields and requirements stay exact. Only empty List / None
-        # additions are safe without inventing a project-specific default.
+        # Existing fields and requirements stay exact. Added fields must have
+        # either an empty collection/option or a validated project choice editor.
         reduced = dict(after, properties={key: new_fields[key] for key in old_fields})
         if 'required' in after:
             required = [key for key in after['required'] if key not in added]

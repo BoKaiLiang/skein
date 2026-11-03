@@ -5,7 +5,7 @@ import textwrap
 
 from . import clip_picker
 from .property_groups import hash_over_64
-from .authoring import cached_description, field_widget
+from .authoring import cached_description, field_editor
 from . import authoring_sync, validation
 
 # ---------------------------------- #
@@ -507,13 +507,91 @@ def render_two(layout, context, context_key, clip_object=None, component=None):
                 layout.label(text=key + ":")
                 render_two(layout.box(), obj, key, clip_object=clip_object, component=component)
         else:
-            if clip_object is not None and field_widget(cached_description(), getattr(obj, '_skein_type_path', ''), key) == 'animation_clip' and value.function.__name__ == 'StringProperty':
+            editor = field_editor(cached_description(), getattr(obj, '_skein_type_path', ''), key)
+            widget = editor['widget'] if editor else None
+            if widget == 'string_choice' and value.function.__name__ == 'StringProperty':
+                draw_string_choice(layout, obj, key, editor)
+            elif clip_object is not None and widget == 'animation_clip' and value.function.__name__ == 'StringProperty':
                 clip_picker.draw_clip_field(layout, obj, key, clip_object, type_path=getattr(obj, '_skein_type_path', ''))
             else:
                 layout.prop(obj, key)
     return
 
+def string_choice_editor(context, field):
+    target = getattr(context, 'skein_choice_target', None)
+    if target is None:
+        return None, None
+    editor = field_editor(cached_description(), getattr(target, '_skein_type_path', ''), field)
+    return target, editor if editor and editor['widget'] == 'string_choice' else None
+
+
+def choices_available():
+    return bpy.app.online_access and authoring_sync.status()['state'] in ('ready', 'unverified')
+
+
+class SKEIN_OT_set_string_choice(bpy.types.Operator):
+    bl_idname = 'skein.set_string_choice'
+    bl_label = 'Set Skein field'
+    bl_options = {'UNDO', 'INTERNAL'}
+
+    field: bpy.props.StringProperty()
+    value: bpy.props.StringProperty()
+
+    def execute(self, context):
+        target, editor = string_choice_editor(context, self.field)
+        if editor is None:
+            return {'CANCELLED'}
+        if self.value and (not choices_available() or not any(
+                choice['id'] == self.value for choice in editor.get('choices') or [])):
+            return {'CANCELLED'}
+        initial = editor.get('initial_float')
+        if self.value and initial and not target.is_property_set(initial['field']):
+            setattr(target, initial['field'], initial['value'])
+        setattr(target, self.field, self.value)
+        return {'FINISHED'}
+
+
+class SKEIN_MT_string_choices(bpy.types.Menu):
+    bl_label = 'Choose value'
+
+    def draw(self, context):
+        target = getattr(context, 'skein_choice_target', None)
+        if target is None:
+            return
+        # The field name is supplied as a context string by the button below.
+        field = context.skein_choice_field
+        _, editor = string_choice_editor(context, field)
+        if editor is None or not choices_available():
+            return
+        for choice in editor.get('choices') or []:
+            op = self.layout.operator('skein.set_string_choice',
+                                      text=f"{choice['label']} ({choice['id']})")
+            op.field, op.value = field, choice['id']
+
+
+def draw_string_choice(layout, target, field, editor):
+    current = getattr(target, field)
+    choices = editor.get('choices')
+    choice = next((item for item in choices or [] if item['id'] == current), None)
+    layout.context_pointer_set('skein_choice_target', target)
+    row = layout.row(align=True)
+    row.label(text=field.replace('_', ' ').title())
+    button = row.row(align=True)
+    button.enabled = choices_available() and bool(choices)
+    button.context_string_set('skein_choice_field', field)
+    label = choice['label'] if choice else current or 'None'
+    button.menu('SKEIN_MT_string_choices', text=label,
+                icon='ERROR' if current and choices is not None and choice is None else 'NONE')
+    if current:
+        op = row.operator('skein.set_string_choice', text='', icon='X')
+        op.field, op.value = field, ''
+    if editor.get('error'):
+        layout.label(text=editor['error'], icon='ERROR')
+
+
 classes = (
+    SKEIN_OT_set_string_choice,
+    SKEIN_MT_string_choices,
     SkeinPanelObject,
     SkeinPanelMesh,
     SkeinPanelMaterial,

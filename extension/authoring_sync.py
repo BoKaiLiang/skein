@@ -173,14 +173,17 @@ def _download(generation, url, request):
         registry = request(url, 'registry.schema', {})
         optional = {}
         warnings = []
-        for method in ('skein/presets', 'skein/authoring'):
+        for method in ('skein/presets', 'skein/authoring', 'skein/string_choices'):
             try:
                 optional[method] = request(url, method, {})
             except connection.RpcError as error:
                 if error.code != -32601:
                     raise
-                warnings.append(f'{method} unavailable: {error}')
+                if method != 'skein/string_choices':
+                    warnings.append(f'{method} unavailable: {error}')
             except (connection.Unavailable, OSError, TimeoutError) as error:
+                if method == 'skein/string_choices':
+                    raise
                 warnings.append(f'{method} unavailable: {error}')
         _results.put((generation, url, registry, optional, warnings, None))
     except Exception as error:
@@ -213,7 +216,6 @@ def _apply(url, registry, optional, warnings):
     # Validate every cache payload before changing RNA forms or any Text datablock.
     json.dumps(registry, allow_nan=False)
     json.dumps(optional, allow_nan=False)
-    validate_registry_refresh(context, registry)
     if 'skein/authoring' in optional:
         description_value = authoring.validate_description(optional['skein/authoring'], registry)
     else:
@@ -222,6 +224,20 @@ def _apply(url, registry, optional, warnings):
         except (ValueError, TypeError, KeyError, AttributeError):
             description_value = authoring.empty_description()
             warnings.append('Incompatible cached authoring description discarded.')
+    choices = optional.get('skein/string_choices', [])
+    if not isinstance(choices, list):
+        raise ValueError('String choice editors must be a list')
+    fields = [item for item in description_value['fields'] if item['widget'] != 'string_choice']
+    description_value = authoring.validate_description(dict(description_value, fields=fields + choices), registry)
+    additive_fields = {}
+    for editor in choices:
+        if editor['widget'] != 'string_choice':
+            raise ValueError('Expected a string choice editor')
+        names = additive_fields.setdefault(editor['type_path'], set())
+        names.add(editor['field'])
+        if editor.get('initial_float'):
+            names.add(editor['initial_float']['field'])
+    validate_registry_refresh(context, registry, additive_fields)
     default_errors = {}
     if 'skein/presets' in optional:
         presets = _presets(optional['skein/presets'], registry, default_errors)

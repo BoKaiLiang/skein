@@ -38,15 +38,39 @@ def validate_description(value, registry):
         _text(method, 'validation method')
     seen = set()
     for item in value['fields']:
-        if not isinstance(item, dict) or item.get('widget') != 'animation_clip':
+        if not isinstance(item, dict) or item.get('widget') not in ('animation_clip', 'string_choice'):
             raise ValueError('Unsupported authoring field editor')
         type_path = _text(item.get('type_path'), 'type path')
         field = _text(item.get('field'), 'field')
         target = registry.get(reference(registry.get(type_path, {}).get('properties', {}).get(field, {})), {})
         if target.get('kind') != 'Value' or target.get('type') != 'string':
-            raise ValueError(f'{type_path}.{field}: animation clip editor requires a String field')
+            raise ValueError(f'{type_path}.{field}: field editor requires a String field')
         if (type_path, field) in seen:
             raise ValueError(f'Duplicate authoring field: {type_path}.{field}')
+        if item['widget'] == 'string_choice':
+            initial = item.get('initial_float')
+            if initial is not None:
+                if not isinstance(initial, dict) or type(initial.get('value')) not in (int, float):
+                    raise ValueError('Invalid initial float value')
+                sibling = _text(initial.get('field'), 'initial float field')
+                schema = registry.get(reference(registry.get(type_path, {}).get('properties', {}).get(sibling, {})), {})
+                if schema.get('type') != 'float':
+                    raise ValueError(f'{type_path}.{sibling}: expected a float field')
+            choices, error = item.get('choices'), item.get('error')
+            if choices is None:
+                _text(error, 'choice error')
+            elif not isinstance(choices, list) or error is not None:
+                raise ValueError('Invalid string choices')
+            else:
+                ids = set()
+                for choice in choices:
+                    if not isinstance(choice, dict):
+                        raise ValueError('Invalid string choice')
+                    identity = _text(choice.get('id'), 'choice ID')
+                    _text(choice.get('label'), 'choice label')
+                    if identity in ids:
+                        raise ValueError(f'Duplicate choice ID: {identity}')
+                    ids.add(identity)
         playback = item.get('playback')
         if playback is not None:
             if not isinstance(playback, dict):
