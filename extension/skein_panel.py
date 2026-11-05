@@ -305,7 +305,11 @@ def render_two(layout, context, context_key, clip_object=None, component=None):
             if entry.__annotations__["value"].function.__name__ == "PointerProperty":
                 render_two(item, entry, "value", clip_object=clip_object, component=component)
             else:
-                item.prop(entry, "value", text="Value")
+                editor = field_editor(cached_description(), getattr(context, '_skein_type_path', ''), context_key)
+                if editor and editor['widget'] == 'string_list_choice':
+                    draw_string_choice(item, entry, context_key, editor, parent=context)
+                else:
+                    item.prop(entry, "value", text="Value")
         return
 
     # Handle core::option::Option specially, before other enums
@@ -521,12 +525,20 @@ def string_choice_editor(context, field):
     target = getattr(context, 'skein_choice_target', None)
     if target is None:
         return None, None
-    editor = field_editor(cached_description(), getattr(target, '_skein_type_path', ''), field)
+    parent = getattr(context, 'skein_choice_parent', None)
+    owner = parent if parent is not None else target
+    editor = field_editor(cached_description(), getattr(owner, '_skein_type_path', ''), field)
+    if editor and editor['widget'] == 'string_list_choice':
+        sequence = getattr(owner, field, None)
+        if sequence is None or not any(entry.as_pointer() == target.as_pointer() for entry in sequence.entries):
+            return None, None
+        return target, editor
     return target, editor if editor and editor['widget'] == 'string_choice' else None
 
 
-def choices_available():
-    return bpy.app.online_access and authoring_sync.status()['state'] in ('ready', 'unverified')
+def choices_available(editor):
+    # Editing uses validated cached metadata; connectivity only controls refresh.
+    return bool(editor.get('choices')) and not editor.get('error')
 
 
 class SKEIN_OT_set_string_choice(bpy.types.Operator):
@@ -541,13 +553,13 @@ class SKEIN_OT_set_string_choice(bpy.types.Operator):
         target, editor = string_choice_editor(context, self.field)
         if editor is None:
             return {'CANCELLED'}
-        if self.value and (not choices_available() or not any(
+        if self.value and (not choices_available(editor) or not any(
                 choice['id'] == self.value for choice in editor.get('choices') or [])):
             return {'CANCELLED'}
         initial = editor.get('initial_float')
         if self.value and initial and not target.is_property_set(initial['field']):
             setattr(target, initial['field'], initial['value'])
-        setattr(target, self.field, self.value)
+        setattr(target, 'value' if editor['widget'] == 'string_list_choice' else self.field, self.value)
         return {'FINISHED'}
 
 
@@ -561,7 +573,7 @@ class SKEIN_MT_string_choices(bpy.types.Menu):
         # The field name is supplied as a context string by the button below.
         field = context.skein_choice_field
         _, editor = string_choice_editor(context, field)
-        if editor is None or not choices_available():
+        if editor is None or not choices_available(editor):
             return
         for choice in editor.get('choices') or []:
             op = self.layout.operator('skein.set_string_choice',
@@ -569,24 +581,28 @@ class SKEIN_MT_string_choices(bpy.types.Menu):
             op.field, op.value = field, choice['id']
 
 
-def draw_string_choice(layout, target, field, editor):
-    current = getattr(target, field)
+def draw_string_choice(layout, target, field, editor, parent=None):
+    current = getattr(target, 'value' if parent is not None else field)
     choices = editor.get('choices')
     choice = next((item for item in choices or [] if item['id'] == current), None)
     layout.context_pointer_set('skein_choice_target', target)
+    if parent is not None:
+        layout.context_pointer_set('skein_choice_parent', parent)
     row = layout.row(align=True)
     row.label(text=field.replace('_', ' ').title())
     button = row.row(align=True)
-    button.enabled = choices_available() and bool(choices)
+    button.enabled = choices_available(editor) and bool(choices)
     button.context_string_set('skein_choice_field', field)
     label = choice['label'] if choice else current or 'None'
     button.menu('SKEIN_MT_string_choices', text=label,
                 icon='ERROR' if current and choices is not None and choice is None else 'NONE')
-    if current:
+    if current and parent is None:
         op = row.operator('skein.set_string_choice', text='', icon='X')
         op.field, op.value = field, ''
     if editor.get('error'):
         layout.label(text=editor['error'], icon='ERROR')
+    elif choices and (not bpy.app.online_access or authoring_sync.status()['state'] != 'ready'):
+        layout.label(text='Cached choices · validation pending', icon='INFO')
 
 
 classes = (

@@ -37,6 +37,28 @@ def fixture():
 
 
 class AuthoringTests(unittest.TestCase):
+    def test_string_list_choice_requires_list_of_strings_and_preserves_metadata(self):
+        registry, description = fixture()
+        registry['VecString'] = dict(kind='List', items=reference('String'))
+        registry['demo::Unit']['properties']['events'] = reference('VecString')
+        field = dict(type_path='demo::Unit', field='events', widget='string_list_choice',
+                     choices=[dict(id='demo:welcome', label='Welcome')], error=None)
+        description['fields'].append(field)
+        self.assertEqual(authoring.validate_description(description, registry)['fields'][-1], field)
+        for target in ('String', 'VecMotion', 'f32'):
+            invalid = copy.deepcopy(registry)
+            invalid['demo::Unit']['properties']['events'] = reference(target)
+            with self.subTest(target=target), self.assertRaises(ValueError):
+                authoring.validate_description(description, invalid)
+        invalid = copy.deepcopy(description)
+        invalid['fields'][-1]['initial_float'] = dict(field='speed', value=1.)
+        with self.assertRaisesRegex(ValueError, 'only to scalar'):
+            authoring.validate_description(invalid, registry)
+        invalid = copy.deepcopy(description)
+        invalid['fields'][-1]['choices'] *= 2
+        with self.assertRaises(ValueError):
+            authoring.validate_description(invalid, registry)
+
     def test_local_clip_playback_uses_declared_sibling_fields(self):
         registry, description = fixture()
         description['fields'][0]['playback'] = dict(loop_field='repeat', speed_field='rate')

@@ -227,11 +227,11 @@ def _apply(url, registry, optional, warnings):
     choices = optional.get('skein/string_choices', [])
     if not isinstance(choices, list):
         raise ValueError('String choice editors must be a list')
-    fields = [item for item in description_value['fields'] if item['widget'] != 'string_choice']
+    fields = [item for item in description_value['fields'] if item['widget'] not in ('string_choice', 'string_list_choice')]
     description_value = authoring.validate_description(dict(description_value, fields=fields + choices), registry)
     additive_fields = {}
     for editor in choices:
-        if editor['widget'] != 'string_choice':
+        if editor['widget'] not in ('string_choice', 'string_list_choice'):
             raise ValueError('Expected a string choice editor')
         names = additive_fields.setdefault(editor['type_path'], set())
         names.add(editor['field'])

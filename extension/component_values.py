@@ -263,30 +263,37 @@ def _comparison_value(registry, path, value, schema=None):
     return value
 
 
-def replace_component(owner, index, registry, value):
-    """Stage a lossless form before replacing the existing component in place."""
-    original = owner.skein_two[index]
-    path, name = original.selected_type_path, original.name
+def append_component(owner, registry, path, value, name=None):
+    """Build a reflected form and retain it only if the value survives round-trip."""
     validate_value(registry, path, value)
     expected = canonical(_comparison_value(registry, path, value))
-    active = owner.active_component_index
     staged_index = len(owner.skein_two)
     try:
         staged = owner.skein_two.add()
-        staged.name, staged.selected_type_path = name, path
+        staged.name = name if name is not None else registry[path]['shortPath']
+        staged.selected_type_path = path
         key = hash_over_64(path)
         touch_all_fields(staged, key)
         object_to_form(staged, key, value)
-        if canonical(_comparison_value(registry, path, read_component(staged, registry))) != expected:
+        actual = read_component(staged, registry)
+        if canonical(_comparison_value(registry, path, actual)) != expected:
             raise ValueError('The editor cannot preserve these field types or values exactly')
     except ERRORS:
         if len(owner.skein_two) > staged_index:
             owner.skein_two.remove(staged_index)
-        owner.active_component_index = active
         raise
-    owner.skein_two.remove(index)
-    owner.skein_two.move(len(owner.skein_two) - 1, index)
-    owner.active_component_index = active
+
+
+def replace_component(owner, index, registry, value):
+    """Stage a lossless form before replacing the existing component in place."""
+    original = owner.skein_two[index]
+    active = owner.active_component_index
+    try:
+        append_component(owner, registry, original.selected_type_path, value, original.name)
+        owner.skein_two.remove(index)
+        owner.skein_two.move(len(owner.skein_two) - 1, index)
+    finally:
+        owner.active_component_index = active
 
 
 class _Target:

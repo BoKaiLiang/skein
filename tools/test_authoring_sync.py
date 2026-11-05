@@ -84,7 +84,87 @@ class AuthoringSyncTests(unittest.TestCase):
 
     def post(self, url, method, params):
         self.assertNotEqual(threading.get_ident(), self.main_thread)
-        return copy.deepcopy({'registry.schema': self.original, 'skein/presets': PRESETS, 'skein/authoring': DESCRIPTION}[method])
+        return copy.deepcopy({'registry.schema': self.original, 'skein/presets': PRESETS, 'skein/authoring': DESCRIPTION, 'skein/string_choices': []}[method])
+
+    def test_list_choice_sync_caches_picker_and_preserves_order(self):
+        from extension.component_values import replace_component, read_component
+        registry = copy.deepcopy(REGISTRY)
+        registry['VecString'] = dict(kind='List', typePath='VecString', shortPath='VecString',
+                                    items={'type': {'$ref': '#/$defs/String'}})
+        registry[TYPE]['properties']['events'] = {'type': {'$ref': '#/$defs/VecString'}}
+        editor = dict(type_path=TYPE, field='events', widget='string_list_choice',
+                      choices=[dict(id='second',label='Second'),dict(id='first',label='First')],error=None)
+        sync._apply('http://test:1',registry,{'skein/authoring':DESCRIPTION,
+                    'skein/string_choices':[editor]},[])
+        replace_component(self.obj,0,registry,dict(clip='Authored',speed=8.,events=['first','second']))
+        sync._apply('http://test:1',registry,{'skein/authoring':DESCRIPTION,
+                    'skein/string_choices':[editor]},[])
+        self.assertEqual(read_component(self.obj.skein_two[0],registry)['events'],['first','second'])
+        self.assertEqual(self.read('skein-authoring.json')['fields'][-1],editor)
+        broken = dict(editor,choices=None,error='Catalog invalid')
+        sync._apply('http://test:1',registry,{'skein/authoring':DESCRIPTION,
+                    'skein/string_choices':[broken]},[])
+        self.assertEqual(read_component(self.obj.skein_two[0],registry)['events'],['first','second'])
+        self.assertEqual(self.read('skein-authoring.json')['fields'][-1]['error'],'Catalog invalid')
+
+    def test_reconnect_refreshes_cached_list_choices_without_rebinding_removed_ids(self):
+        from extension import skein_panel as panel
+        from extension.component_values import replace_component, read_component
+
+        class ChoiceLayout:
+            def __init__(self): self.menus = []
+            def row(self, **_): return self
+            def label(self, **_): pass
+            def context_pointer_set(self, *_): pass
+            def context_string_set(self, *_): pass
+            def menu(self, name, **kwargs): self.menus.append((name, kwargs))
+
+        registry = copy.deepcopy(REGISTRY)
+        registry['VecString'] = dict(kind='List', typePath='VecString', shortPath='VecString',
+                                    items={'type': {'$ref': '#/$defs/String'}})
+        registry[TYPE]['properties']['events'] = {'type': {'$ref': '#/$defs/VecString'}}
+        original = dict(type_path=TYPE, field='events', widget='string_list_choice',
+                        choices=[dict(id='removed', label='Original event')], error=None)
+        sync._apply('http://test:1', registry, {'skein/authoring': DESCRIPTION,
+                    'skein/string_choices': [original]}, [])
+        bound = dict(clip='Authored', speed=8., events=['removed'])
+        replace_component(self.obj, 0, registry, bound)
+        refreshed = dict(original, choices=[dict(id='new', label='New event')])
+        sync._apply('http://test:1', registry, {'skein/authoring': DESCRIPTION,
+                    'skein/string_choices': [refreshed]}, [])
+        self.assertEqual(read_component(self.obj.skein_two[0], registry), bound)
+        self.assertEqual(self.read('skein-authoring.json')['fields'][-1], refreshed)
+
+        form = getattr(self.obj.skein_two[0], hash_over_64(TYPE))
+        entry = form.events.entries[0]
+        editor = panel.field_editor(panel.cached_description(), TYPE, 'events')
+        layout = ChoiceLayout()
+        panel.draw_string_choice(layout, entry, 'events', editor, parent=form)
+        self.assertEqual(layout.menus[0][1]['text'], 'removed')
+        self.assertEqual(layout.menus[0][1]['icon'], 'ERROR')
+        with bpy.context.temp_override(skein_choice_parent=form, skein_choice_target=entry):
+            self.assertEqual(bpy.ops.skein.set_string_choice(field='events', value='removed'), {'CANCELLED'})
+            self.assertEqual(bpy.ops.skein.set_string_choice(field='events', value='new'), {'FINISHED'})
+        self.assertEqual(read_component(self.obj.skein_two[0], registry)['events'], ['new'])
+
+        # Restore a saved stale binding, then disconnect without another runtime
+        # response. Offline selection must use the refreshed cache, not old IDs.
+        entry.value = 'removed'
+        with patch.object(sync, '_online', return_value=False):
+            sync.restore_cache()
+        self.assertEqual(sync.status()['state'], 'offline')
+        self.assertEqual(read_component(self.obj.skein_two[0], registry), bound)
+        form = getattr(self.obj.skein_two[0], hash_over_64(TYPE))
+        entry = form.events.entries[0]
+        editor = panel.field_editor(panel.cached_description(), TYPE, 'events')
+        layout = ChoiceLayout()
+        panel.draw_string_choice(layout, entry, 'events', editor, parent=form)
+        self.assertEqual(layout.menus[0][1]['icon'], 'ERROR')
+        with bpy.context.temp_override(skein_choice_parent=form, skein_choice_target=entry):
+            self.assertEqual(bpy.ops.skein.set_string_choice(field='events', value='removed'), {'CANCELLED'})
+            self.assertEqual(bpy.ops.skein.set_string_choice(field='events', value='new'), {'FINISHED'})
+        self.assertEqual(read_component(self.obj.skein_two[0], registry)['events'], ['new'])
+        self.assertEqual(read_component(self.obj.skein_two[0], registry)['clip'], 'Authored')
 
     def test_sync_is_nonblocking_and_applies_only_on_main_thread(self):
         self.main_thread = threading.get_ident()

@@ -1,5 +1,6 @@
 import bpy # type: ignore
 import json
+from .sensor_event_migration import MigrateSensorEvents
 from . import clip_picker, action_preview, component_values, authoring_sync, local_preview
 from bpy.app.handlers import persistent
 from .op_apply_preset import register as register_op_apply_preset, unregister as unregister_op_apply_preset
@@ -109,6 +110,7 @@ def menu_func(self, context):
     self.layout.operator(FetchRemoteTypeRegistry.bl_idname)
     # self.layout.operator(DebugCheckComponents.bl_idname)
     self.layout.operator(ReloadSkeinRegistryJson.bl_idname)
+    self.layout.operator(MigrateSensorEvents.bl_idname)
 
 def register():
     bpy.utils.register_class(SkeinAddonPreferences)
@@ -169,6 +171,7 @@ def register():
     bpy.utils.register_class(FetchRemoteTypeRegistry)
     bpy.utils.register_class(ReloadSkeinRegistryJson)
     bpy.utils.register_class(DebugCheckComponents)
+    bpy.utils.register_class(MigrateSensorEvents)
     ## Insertion Operations
     register_op_insert_component()
     ## Remove Operations
@@ -240,6 +243,7 @@ def unregister():
     bpy.utils.unregister_class(FetchRemoteTypeRegistry)
     bpy.utils.unregister_class(ReloadSkeinRegistryJson)
     bpy.utils.unregister_class(DebugCheckComponents)
+    bpy.utils.unregister_class(MigrateSensorEvents)
     ## Insertion Operations
     unregister_op_insert_component()
     ## Remove Operations

@@ -38,18 +38,24 @@ def validate_description(value, registry):
         _text(method, 'validation method')
     seen = set()
     for item in value['fields']:
-        if not isinstance(item, dict) or item.get('widget') not in ('animation_clip', 'string_choice'):
+        if not isinstance(item, dict) or item.get('widget') not in ('animation_clip', 'string_choice', 'string_list_choice'):
             raise ValueError('Unsupported authoring field editor')
         type_path = _text(item.get('type_path'), 'type path')
         field = _text(item.get('field'), 'field')
         target = registry.get(reference(registry.get(type_path, {}).get('properties', {}).get(field, {})), {})
-        if target.get('kind') != 'Value' or target.get('type') != 'string':
+        if item['widget'] == 'string_list_choice':
+            element = registry.get(reference(target.get('items', {})), {})
+            if target.get('kind') != 'List' or element.get('kind') != 'Value' or element.get('type') != 'string':
+                raise ValueError(f'{type_path}.{field}: field editor requires a List of String values')
+        elif target.get('kind') != 'Value' or target.get('type') != 'string':
             raise ValueError(f'{type_path}.{field}: field editor requires a String field')
         if (type_path, field) in seen:
             raise ValueError(f'Duplicate authoring field: {type_path}.{field}')
-        if item['widget'] == 'string_choice':
+        if item['widget'] in ('string_choice', 'string_list_choice'):
             initial = item.get('initial_float')
             if initial is not None:
+                if item['widget'] == 'string_list_choice':
+                    raise ValueError('Initial float values apply only to scalar string choices')
                 if not isinstance(initial, dict) or type(initial.get('value')) not in (int, float):
                     raise ValueError('Invalid initial float value')
                 sibling = _text(initial.get('field'), 'initial float field')
