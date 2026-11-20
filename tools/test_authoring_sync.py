@@ -247,6 +247,56 @@ class AuthoringSyncTests(unittest.TestCase):
         self.assertEqual(self.value(), dict(clip='Authored', speed=8.0))
         self.assertEqual(self.read('skein-presets.json'), PRESETS)
 
+    def test_restore_rpc_wrapped_registry_uses_result_without_changing_components(self):
+        wrapped = dict(jsonrpc='2.0', id=1, result=copy.deepcopy(REGISTRY))
+        self.write('skein-registry.json', wrapped)
+        raw = sync._raw(self.obj.skein_two[0])
+        with patch.object(sync, '_online', return_value=False):
+            restored = sync.restore_cache()
+        self.assertEqual(restored['state'], 'offline', restored)
+        self.assertEqual(json.loads(bpy.context.window_manager.skein.registry), REGISTRY)
+        self.assertEqual(self.value(), dict(clip='Authored', speed=8.0))
+        self.assertEqual(sync._raw(self.obj.skein_two[0]), raw)
+        self.assertEqual(self.read('skein-registry.json'), wrapped)
+
+    def test_restore_file_cache_does_not_interpret_loaded_data_with_previous_schema(self):
+        # RNA classes can still describe the previously open file when load_post
+        # restores the new file's cache. The new file owns its serialized values.
+        previous = copy.deepcopy(REGISTRY)
+        previous[TYPE]['properties']['legacy_message'] = {'type': {'$ref': '#/$defs/String'}}
+        process_registry(bpy.context, previous)
+        self.write('skein-registry.json', REGISTRY)
+        raw = sync._raw(self.obj.skein_two[0])
+        restored = sync.restore_cache()
+        self.assertEqual(restored['state'], 'offline', restored)
+        self.assertEqual(json.loads(bpy.context.window_manager.skein.registry), REGISTRY)
+        self.assertEqual(sync._raw(self.obj.skein_two[0]), raw)
+        self.assertEqual(self.value(), dict(clip='Authored', speed=8.0))
+        from extension.op_registry_loading import validate_registry_refresh
+        validate_registry_refresh(bpy.context, REGISTRY)
+
+    def test_open_file_restores_wrapped_cache_after_previous_file_schema(self):
+        wrapped = dict(jsonrpc='2.0', id=1, result=copy.deepcopy(REGISTRY))
+        self.write('skein-registry.json', wrapped)
+        self.obj.skein_two[0]['opaque_extra'] = {'keep': [3, 7, 11]}
+        raw = sync._raw(self.obj.skein_two[0])
+        name = self.obj.name
+        with tempfile.TemporaryDirectory() as temporary:
+            path = str(Path(temporary) / 'cached-scene.blend')
+            self.assertEqual(bpy.ops.wm.save_as_mainfile(filepath=path, copy=True), {'FINISHED'})
+            previous = copy.deepcopy(REGISTRY)
+            previous[TYPE]['properties']['legacy_message'] = {'type': {'$ref': '#/$defs/String'}}
+            process_registry(bpy.context, previous)
+            with patch.object(sync, '_online', return_value=False):
+                bpy.ops.wm.open_mainfile(filepath=path, load_ui=False, use_scripts=False)
+            self.obj = bpy.data.objects[name]
+            self.assertEqual(sync.status()['state'], 'offline', sync.status())
+            self.assertEqual(json.loads(bpy.context.window_manager.skein.registry), REGISTRY)
+            self.assertEqual(sync._raw(self.obj.skein_two[0]), raw)
+            self.assertEqual(self.value(), dict(clip='Authored', speed=8.0))
+            from extension.op_registry_loading import validate_registry_refresh
+            validate_registry_refresh(bpy.context, REGISTRY)
+
     def test_incompatible_used_schema_rejected_before_cache_or_value_changes(self):
         self.main_thread = threading.get_ident()
         self.original['f32']['type'] = 'string'

@@ -84,7 +84,7 @@ def _raw(value):
     return value
 
 
-def _snapshot(registry):
+def _snapshot(registry, *, read_values=True):
     from .component_values import read_component, ERRORS
     result = []
     for owner in component_owners():
@@ -92,11 +92,12 @@ def _snapshot(registry):
         if not components:
             continue
         values = []
-        for index, component in enumerate(components):
-            try:
-                values.append((index, read_component(component, registry)))
-            except ERRORS:
-                pass
+        if read_values:
+            for index, component in enumerate(components):
+                try:
+                    values.append((index, read_component(component, registry)))
+                except ERRORS:
+                    pass
         result.append((owner, [_raw(component) for component in components], values, owner.active_component_index))
     return result
 
@@ -112,11 +113,14 @@ def _preserves_values(before, after):
     return type(before) is type(after) and before == after
 
 
-def _rebuild(context, registry):
+def _rebuild(context, registry, *, restoring_cache=False):
     """Keep raw data for unsupported types and verify supported values after rebind."""
     from .component_values import read_component
     previous = json.loads(context.window_manager.skein.registry)
-    original = _snapshot(previous)
+    # A loaded file's cache defines its ID-property format. The RNA registry can
+    # still belong to the previously open file, so it cannot decode these values.
+    # Online refresh continues to compare both raw data and decoded old values.
+    original = _snapshot(previous, read_values=not restoring_cache)
     try:
         process_registry(context, registry)
         for owner, raw, values, active in original:
@@ -137,6 +141,18 @@ def _rebuild(context, registry):
         raise
 
 
+def _cached_registry(value):
+    """Accept a registry or a saved successful BRP registry.schema response."""
+    if isinstance(value, dict) and value.get('jsonrpc') == '2.0':
+        if ('error' in value or 'result' not in value
+                or set(value) - {'jsonrpc', 'id', 'result'}
+                or not isinstance(value['result'], dict)):
+            raise ValueError('Cached registry must contain a successful JSON-RPC result')
+        value = value['result']
+    validate_registry(value)
+    return value
+
+
 def restore_cache(context=None):
     """Invalidate old-file work before rebuilding forms from this file's cache."""
     global _generation, _pending, _description
@@ -149,9 +165,8 @@ def restore_cache(context=None):
         info = _read('skein-cache-info.json', {})
         if isinstance(info, dict) and info.get('schema') == 'skein.cache/v1':
             _status.update(endpoint=info.get('endpoint', ''), fetched_at=info.get('fetched_at', ''))
-        registry = _read('skein-registry.json', {})
-        validate_registry(registry)
-        _rebuild(context, registry)
+        registry = _cached_registry(_read('skein-registry.json', {}))
+        _rebuild(context, registry, restoring_cache=True)
         try:
             _description = authoring.validate_description(_read('skein-authoring.json', authoring.empty_description()), registry)
         except (ValueError, TypeError, KeyError, AttributeError):
