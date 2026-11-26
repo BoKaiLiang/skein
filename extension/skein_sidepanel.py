@@ -1,4 +1,5 @@
 import bpy
+from .arforge_migration import MigrateArforgeCharacters, legacy_objects
 from .op_trigger_collection_exporters import TriggerCollectionExporters
 
 class SKEIN_PT_sidebar(bpy.types.Panel):
@@ -10,7 +11,9 @@ class SKEIN_PT_sidebar(bpy.types.Panel):
 
     def draw(self, context):
         col = self.layout.column(align=True)
-        prop = col.operator(TriggerCollectionExporters.bl_idname)
+        col.operator(TriggerCollectionExporters.bl_idname)
+        if legacy_objects(context.scene.objects):
+            col.operator(MigrateArforgeCharacters.bl_idname)
 
 classes = (
     SKEIN_PT_sidebar,

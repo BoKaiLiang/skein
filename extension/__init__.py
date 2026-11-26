@@ -1,5 +1,6 @@
 import bpy # type: ignore
 import json
+from .arforge_migration import MigrateArforgeCharacters
 from .sensor_event_migration import MigrateSensorEvents
 from . import clip_picker, action_preview, component_values, authoring_sync, local_preview
 from bpy.app.handlers import persistent
@@ -171,6 +172,7 @@ def register():
     bpy.utils.register_class(FetchRemoteTypeRegistry)
     bpy.utils.register_class(ReloadSkeinRegistryJson)
     bpy.utils.register_class(DebugCheckComponents)
+    bpy.utils.register_class(MigrateArforgeCharacters)
     bpy.utils.register_class(MigrateSensorEvents)
     ## Insertion Operations
     register_op_insert_component()
@@ -243,6 +245,7 @@ def unregister():
     bpy.utils.unregister_class(FetchRemoteTypeRegistry)
     bpy.utils.unregister_class(ReloadSkeinRegistryJson)
     bpy.utils.unregister_class(DebugCheckComponents)
+    bpy.utils.unregister_class(MigrateArforgeCharacters)
     bpy.utils.unregister_class(MigrateSensorEvents)
     ## Insertion Operations
     unregister_op_insert_component()
